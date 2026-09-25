@@ -1,0 +1,81 @@
+#!/bin/bash
+# DB client launcher (shell plugin momoledev.dbclient).
+#
+#   omarchy-dbclient                         toggle the window
+#   omarchy-dbclient open <connection>       open and expand a saved connection (id or name)
+#   omarchy-dbclient query <connection> <sql> [database]
+#                                            open a query tab and run it
+#   omarchy-dbclient new                     open the "new connection" form
+#   omarchy-dbclient list                    list saved connections
+#   omarchy-dbclient drivers                 show driver status
+
+set -euo pipefail
+
+ID=momoledev.dbclient
+DIR=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+CONNECTIONS="${DBCLIENT_CONFIG_DIR:-$HOME/.config/omarchy-dbclient}/connections.json"
+
+resolve() {
+  python3 - "$CONNECTIONS" "$1" <<'PY'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    conns = json.load(open(path))
+except FileNotFoundError:
+    conns = []
+for c in conns:
+    if key in (c.get("id"), c.get("name")):
+        print(c["id"]); break
+else:
+    sys.exit("unknown connection: " + key)
+PY
+}
+
+case "${1:-toggle}" in
+  toggle)
+    omarchy-shell shell toggle "$ID" '{}'
+    ;;
+  open)
+    conn=$(resolve "${2:?connection id or name}")
+    omarchy-shell shell summon "$ID" '{}' >/dev/null
+    omarchy-shell shell call "$ID" expand "$conn" >/dev/null
+    ;;
+  query)
+    conn=$(resolve "${2:?connection id or name}")
+    payload=$(python3 -c 'import json,sys; print(json.dumps({"connId": sys.argv[1], "text": sys.argv[2], "database": sys.argv[3], "run": True}))' \
+      "$conn" "${3:?query text}" "${4:-}")
+    omarchy-shell shell summon "$ID" "$payload" >/dev/null
+    ;;
+  new)
+    omarchy-shell shell summon "$ID" '{}' >/dev/null
+    omarchy-shell shell call "$ID" newConnection "" >/dev/null
+    ;;
+  list)
+    python3 - "$CONNECTIONS" <<'PY'
+import json, sys
+try:
+    conns = json.load(open(sys.argv[1]))
+except FileNotFoundError:
+    conns = []
+for c in conns:
+    where = c.get("file") or "%s:%s" % (c.get("host", "localhost"), c.get("port", ""))
+    print("%-14s %-11s %-24s %s" % (c["id"], c["type"], c.get("name", ""), where))
+PY
+    ;;
+  drivers)
+    python3 "$DIR/backend/dbclient.py" drivers | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+for k, v in d["drivers"].items():
+    state = "built in" if v["builtin"] else ("installed" if v["installed"] else "missing  (pip: %s%s)" % (v["pip"], ", pacman: " + v["pacman"] if v["pacman"] else ""))
+    print("%-11s %-16s %s" % (k, v["label"], state))
+print("venv:", d["venv"])'
+    ;;
+  -h|--help|help)
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+  *)
+    echo "Unknown command: $1 (see omarchy-dbclient --help)" >&2
+    exit 1
+    ;;
+esac

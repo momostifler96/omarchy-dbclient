@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "momoledev.dbclient",
+  "name": "DB Client",
+  "version": "0.1.0",
+  "author": "momoledev",
+  "license": "MIT",
+  "description": "Database client for MySQL/MariaDB, PostgreSQL, Oracle, ClickHouse, Redis, SQLite and MongoDB: connection tree, query tabs, result grid, driver installer. Toggle with: omarchy-shell shell toggle momoledev.dbclient '{}'",
+  "kinds": [
+    "panel",
+    "bar-widget"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Panel.qml",
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "DB Client",
+    "description": "Open the database client window.",
+    "category": "Development",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {},
+    "schema": []
+  }
+}
