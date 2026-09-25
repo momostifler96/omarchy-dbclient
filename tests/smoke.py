@@ -37,6 +37,16 @@ SERVERS = {
 }
 
 
+# Object opened in the data editor after the script ran: (path, column, new value)
+EDIT = {
+    "mysql": (["table", "t", "a"], "s", "edited"),
+    "postgresql": (["table", "postgres", "public", "a"], "j", '{"k": 2}'),
+    "redis": (["key", "0", "h"], "value", "2"),
+    "mongodb": (["coll", "t", "a"], "x", "2"),
+    "clickhouse": (["table", "default", "a"], "s", "edited"),
+}
+
+
 class Backend:
     def __init__(self, cfgdir):
         env = dict(os.environ, DBCLIENT_CONFIG_DIR=cfgdir, DBCLIENT_STATE_DIR=cfgdir)
@@ -84,6 +94,24 @@ def main():
             if not tree["ok"] or not q["ok"]:
                 raise RuntimeError(tree.get("error") or q.get("error"))
             last = q["result"]["results"][-1]
+            if kind in EDIT:
+                path, col, value = EDIT[kind]
+                data = backend.call("table_data", connId=kind, path=path, limit=10)
+                if not data["ok"]:
+                    raise RuntimeError("table_data: " + data["error"])
+                d = data["result"]
+                change = {"op": "update", "key": d["keys"][0], "values": {col: value}}
+                applied = backend.call("apply_changes", connId=kind, path=path, changes=[change])
+                if not applied["ok"]:
+                    raise RuntimeError("apply_changes: " + applied["error"])
+                again = backend.call("table_data", connId=kind, path=path, limit=10)["result"]
+                got = again["rows"][0][again["columns"].index(col)]
+                if str(got).replace(" ", "") != value.replace(" ", ""):
+                    raise RuntimeError("edit not saved: %r" % got)
+                if path[0] == "table":
+                    ddl = backend.call("object_sql", connId=kind, path=path, op="ddl")
+                    if not ddl["ok"] or "CREATE" not in ddl["result"]["sql"].upper():
+                        raise RuntimeError("ddl: %s" % ddl.get("error"))
             print("OK   %-11s tree=%d nodes, %d results, last: %s %s" % (
                 kind, len(tree["result"]), len(q["result"]["results"]), last["columns"], last["rows"][:2]))
         except Exception as e:
