@@ -1010,8 +1010,9 @@ class ClickhouseAdapter(Adapter):
                 out = self.client.command(stmt)
                 summary = getattr(out, "summary", None) or {}
                 msg = "OK"
-                if isinstance(summary, dict) and summary.get("written_rows"):
-                    msg = "%s row(s) written" % summary["written_rows"]
+                written = int((summary.get("written_rows") if isinstance(summary, dict) else 0) or 0)
+                if written:
+                    msg = "%d row(s) written" % written
                 elif isinstance(out, (str, int)) and out != "":
                     msg = str(out)
                 results.append(message_result(msg, time.time() - t0, stmt))
