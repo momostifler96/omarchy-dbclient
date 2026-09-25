@@ -1,18 +1,19 @@
 # DB Client for Omarchy
 
 A database client for the [Omarchy](https://omarchy.org) shell, in the spirit of
-the VS Code *Database Client* extension: a connection tree, query tabs, a result
-grid, and a driver installer that asks before touching your system.
+the VS Code *Database Client* extension: a schema tree with views, functions,
+procedures, sequences and triggers, query tabs, an editable data grid, and a
+driver installer that asks before touching your system.
 
-| Engine            | Driver (Python)       | Tree                                    | Query language                   |
-|-------------------|-----------------------|-----------------------------------------|----------------------------------|
-| MySQL / MariaDB   | `PyMySQL`             | databases → tables/views → columns      | SQL                              |
-| PostgreSQL        | `psycopg` 3           | databases → schemas → tables → columns  | SQL (`$$` bodies supported)      |
-| Oracle            | `oracledb` (thin)     | schemas → tables/views → columns        | SQL, PL/SQL blocks ended by `/`  |
-| ClickHouse        | `clickhouse-connect`  | databases → tables → columns            | SQL (HTTP interface)             |
-| Redis / Valkey    | `redis`               | db0…dbN → keys (by type)                | one command per line             |
-| SQLite            | built in              | tables/views → columns                  | SQL                              |
-| MongoDB           | `pymongo`             | databases → collections → indexes       | mongosh-style (`db.c.find(...)`) |
+| Engine            | Driver (Python)       | Objects in the tree                                                              | Query language                    |
+|-------------------|-----------------------|----------------------------------------------------------------------------------|-----------------------------------|
+| MySQL / MariaDB   | `PyMySQL`             | tables, views, functions, procedures, triggers, events, indexes                  | SQL, `DELIMITER` supported        |
+| PostgreSQL        | `psycopg` 3           | schemas, tables, views, materialized views, functions, procedures, sequences, triggers, indexes | SQL, `$$` bodies supported |
+| Oracle            | `oracledb` (thin)     | tables, views, materialized views, functions, procedures, packages, sequences, triggers, indexes | SQL, PL/SQL units ended by `/` |
+| ClickHouse        | `clickhouse-connect`  | tables, views, dictionaries                                                      | SQL (HTTP interface)              |
+| Redis / Valkey    | `redis`               | db0…dbN → keys, by type                                                          | one command per line              |
+| SQLite            | built in              | tables, views, indexes, triggers                                                 | SQL, trigger bodies supported     |
+| MongoDB           | `pymongo`             | databases → collections and views → indexes                                     | mongosh-style (`db.c.find(...)`)  |
 
 Oracle uses the thin driver, so no Instant Client is needed.
 
@@ -71,13 +72,70 @@ Open the window from the bar icon, with `Super+Alt+D`, or with `omarchy-dbclient
 
 | In the window             | Action                         |
 |---------------------------|--------------------------------|
-| `Ctrl+Enter` / `F5`       | Run (selection or everything)  |
+| `Ctrl+Enter` / `F5`       | Run (selection or everything); reload in a table tab |
+| `Ctrl+S` / `Ctrl+I`       | Save changes / add a row (table tab) |
 | `Ctrl+T` / `Ctrl+W`       | New / close query tab          |
 | `Ctrl+Tab`                | Next tab                       |
 | `Ctrl+N`                  | New connection                 |
 | `Esc`                     | Close the current dialog       |
 
 UI language: the `AUTO / EN / FR` switch at the bottom of the sidebar.
+
+### Schema objects
+
+Objects are grouped in folders (Tables, Views, Functions, Triggers…).
+Right-click a node, or use its `⋯` button, to see what you can do with it:
+
+- **Open data**: open a table, view or collection in the data editor. This is
+  also what a double-click on a table does.
+- **SELECT in a query tab**: run the default query on the object.
+- **View / edit definition**: opens the DDL in a query tab. Views, functions,
+  procedures and triggers come out as a runnable `CREATE OR REPLACE` (or
+  `DROP … IF EXISTS` + `CREATE`) script, so running the tab applies your edit.
+  Tables show their `CREATE TABLE` for reference. This is also what a
+  double-click on a function or trigger does.
+- **New…** on a folder: opens a ready-to-edit template (table, view, function,
+  procedure, sequence, trigger, event, package…). On a connection: new database.
+- **New index**, **Refresh materialized view**, **Empty (TRUNCATE)**,
+  **Drop**: these show the exact statement and ask for confirmation first.
+
+### Data editor
+
+**Open data** opens a table tab with an editable grid.
+
+| Action                          | How                                                        |
+|---------------------------------|------------------------------------------------------------|
+| Edit a cell                     | double-click, `F2`, `Enter`, or just start typing          |
+| Next cell / next row            | `Tab` / `Enter` while editing, `Esc` cancels               |
+| Add a row                       | `+` or `Ctrl+I`. Unset cells stay `DEFAULT`                 |
+| Select rows                     | click the row number (`Ctrl` toggles, `Shift` extends)     |
+| Delete / restore selected rows  | `−` or `Del`                                               |
+| Set NULL                        | `NULL` button                                              |
+| Save                            | `Save (n)` or `Ctrl+S`                                     |
+| Discard                         | `↶` (undo all pending changes)                             |
+| Filter                          | the `WHERE …` field (Mongo: `{age: {$gt: 18}}`, Redis: `MATCH` pattern) |
+| Sort                            | click a column header                                      |
+| Pages                           | `‹` `›` and the page-size field                            |
+
+Changes stay pending until you save. Modified cells are highlighted, new rows
+are green, deleted rows red and struck through, and the tab gets a `●`. On
+save everything runs in **one transaction**: if a row changed or disappeared in
+the meantime, nothing is written.
+
+Rows are identified by their primary key. Without one, the editor falls back
+to PostgreSQL `ctid`, SQLite `rowid` or Oracle `ROWID`. MySQL tables without a
+primary or unique `NOT NULL` key, and all views, are read-only.
+
+Engine specifics:
+- **ClickHouse**: updates and deletes are mutations (`ALTER TABLE … UPDATE`,
+  lightweight `DELETE`), run with `mutations_sync = 1`. They are not
+  transactional.
+- **MongoDB**: edited cells accept mongosh literals: `42`, `true`, `["a"]`,
+  `{city: "Lyon"}`, `ObjectId("…")`. Anything else is stored as a string.
+  Quote a value (`"42"`) to force a string.
+- **Redis**: each key opens as a grid shaped by its type (string, hash,
+  list, set, sorted set). Streams are read-only. The TTL is kept when a value
+  is changed.
 
 ### MongoDB syntax
 
@@ -89,7 +147,10 @@ db.users.find({age: {$gt: 18}, name: /^al/i}, {name: 1}).sort({age: -1}).skip(10
 db.users.findOne({_id: ObjectId("64b7f0c2a1b2c3d4e5f60718")})
 db.users.aggregate([{$group: {_id: "$city", n: {$sum: 1}}}])
 db.users.countDocuments({})    // also: distinct, insertOne/Many, updateOne/Many, replaceOne,
-                               //       deleteOne/Many, getIndexes, createIndex, drop
+                               //       deleteOne/Many, getIndexes, createIndex, dropIndex, drop
+db.createCollection("logs")
+db.createView("adults", "users", [{$match: {age: {$gte: 18}}}])
+db.dropDatabase()
 db.getCollection("logs.2024").find()
 db.runCommand({dbStats: 1})
 ```
@@ -108,6 +169,7 @@ One command per line, quoting like a shell: `GET "key with spaces"`,
 omarchy-dbclient                          # toggle the window
 omarchy-dbclient open "Prod PG"           # open and expand a connection (id or name)
 omarchy-dbclient query "Prod PG" "SELECT now()" [database]
+omarchy-dbclient table "Prod PG" users [db.schema]   # open a table in the data editor
 omarchy-dbclient new                      # new connection form
 omarchy-dbclient list                     # saved connections
 omarchy-dbclient drivers                  # driver status
@@ -126,8 +188,9 @@ omarchy-dbclient drivers                  # driver status
 
 `Panel.qml` is a `panel` plugin with `keepLoaded: true`, so the window and its
 state live inside `omarchy-shell` between openings. All database work happens
-in `backend/dbclient.py`, a single Python process that speaks JSON lines over
-stdin/stdout. It keeps one session per connection, runs each request in its own
+in `backend/`, a single Python process that speaks JSON lines over
+stdin/stdout: `dbclient.py` (server), `core.py` (drivers, script splitting,
+the shared data editor), `sql_engines.py` and `nosql_engines.py`. It keeps one session per connection, runs each request in its own
 thread, and reconnects once if a connection drops.
 
 Because the panel stays loaded, edits to its QML take effect after

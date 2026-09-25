@@ -5,6 +5,8 @@
 #   omarchy-dbclient open <connection>       open and expand a saved connection (id or name)
 #   omarchy-dbclient query <connection> <sql> [database]
 #                                            open a query tab and run it
+#   omarchy-dbclient table <connection> <table> [schema|database]
+#                                            open a table in the data editor
 #   omarchy-dbclient new                     open the "new connection" form
 #   omarchy-dbclient list                    list saved connections
 #   omarchy-dbclient drivers                 show driver status
@@ -46,6 +48,29 @@ case "${1:-toggle}" in
       "$conn" "${3:?query text}" "${4:-}")
     omarchy-shell shell summon "$ID" "$payload" >/dev/null
     ;;
+  table)
+    conn=$(resolve "${2:?connection id or name}")
+    arg=$(python3 - "$CONNECTIONS" "$conn" "${3:?table name}" "${4:-}" <<'PY'
+import json, sys
+path, conn, table, parent = sys.argv[1:5]
+kind = next(c["type"] for c in json.load(open(path)) if c["id"] == conn)
+if kind == "sqlite":
+    p = ["table", table]
+elif kind == "postgresql":
+    db, _, schema = parent.rpartition(".")
+    p = ["table", db or "postgres", schema or "public", table]
+elif kind == "mongodb":
+    p = ["coll", parent or "test", table]
+elif kind == "redis":
+    p = ["key", parent or "0", table]
+else:  # mysql, clickhouse: database; oracle: schema
+    p = ["table", parent, table]
+print(json.dumps({"connId": conn, "path": p, "label": table, "database": p[1] if len(p) > 2 else ""}))
+PY
+)
+    omarchy-shell shell summon "$ID" '{}' >/dev/null
+    omarchy-shell shell call "$ID" openTableJson "$arg" >/dev/null
+    ;;
   new)
     omarchy-shell shell summon "$ID" '{}' >/dev/null
     omarchy-shell shell call "$ID" newConnection "" >/dev/null
@@ -72,7 +97,7 @@ for k, v in d["drivers"].items():
 print("venv:", d["venv"])'
     ;;
   -h|--help|help)
-    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
     ;;
   *)
     echo "Unknown command: $1 (see omarchy-dbclient --help)" >&2
