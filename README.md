@@ -61,6 +61,10 @@ Open the window from the bar icon, with `Super+Alt+D`, or with `omarchy-dbclient
 - Click a connection to connect and expand it. Double-click a table, collection
   or key (or hover and press ▷) to open it in a query tab.
 - Row buttons on a connection: new query, refresh, disconnect, edit, delete.
+- The editor highlights SQL (keywords, types, functions, strings, numbers,
+  comments, quoted identifiers, `$1`/`:name` parameters), Redis commands and
+  mongosh syntax, with colors taken from the current Omarchy theme. They
+  follow theme switches live.
 - Run the whole editor, or only the selection, with `Ctrl+Enter` or `F5`.
   Several statements separated by `;` each produce a result, and you can
   switch between them above the grid.
