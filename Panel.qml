@@ -5,6 +5,7 @@ import Quickshell.Io
 import qs.Commons
 import qs.Ui
 import "I18n.js" as I18n
+import "Highlighter.js" as Highlighter
 
 // DB client window: schema tree on the left; on the right, tabs that are
 // either query tabs (editor + results) or table tabs (editable data grid).
@@ -127,6 +128,50 @@ Item {
     if (dbField) dbField.text = tab ? tab.database : ""
   }
 
+  // ---- syntax colors (from the Omarchy theme, live on theme switch) --------
+  property var themeColors: ({})
+  readonly property var syntaxColors: ({
+    keyword: themeColors.blue || String(Color.accent),
+    type: themeColors.yellow || "#e5c07b",
+    func: themeColors.cyan || "#56b6c2",
+    string: themeColors.green || "#98c379",
+    number: themeColors.orange || themeColors.yellow || "#d19a66",
+    comment: String(Color.muted),
+    ident: themeColors.magenta || "#c678dd",
+    param: themeColors.red || "#e06c75",
+    punct: themeColors.light_foreground || String(Color.foreground),
+    text: String(Color.foreground)
+  })
+  readonly property string editorDialect: tabConn ? tabConn.type : "sql"
+
+  function highlight(text, dialect) {
+    return Highlighter.toHtml(text, dialect || "sql", syntaxColors)
+  }
+
+  FileView {
+    id: themeFile
+    path: Quickshell.env("HOME") + "/.local/state/omarchy/current/theme/colors.toml"
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: {
+      var values = {}
+      var lines = String(text()).split("\n")
+      for (var i = 0; i < lines.length; i++) {
+        var m = lines[i].match(/^\s*([a-z_]+)\s*=\s*"(#[0-9a-fA-F]{6,8})"/)
+        if (m) values[m[1]] = m[2]
+      }
+      root.themeColors = values
+    }
+  }
+
+  // A theme switch repoints the current-theme symlink; the accent change is
+  // the reliable signal to re-read the palette.
+  Connections {
+    target: Color
+    function onAccentChanged() { themeFile.reload() }
+  }
+
   property string toastText: ""
   property bool toastError: false
   property var pendingOpen: null
@@ -223,7 +268,8 @@ Item {
   }
 
   // ---- confirmations ------------------------------------------------------
-  function ask(title, message, sql, confirmText, danger, onYes) {
+  function ask(title, message, sql, confirmText, danger, onYes, connId) {
+    askDialog.connId = connId || ""
     askDialog.title = title
     askDialog.message = message
     askDialog.sql = sql || ""
@@ -397,7 +443,7 @@ Item {
           if (op === "drop") refreshNode(row.connId, row.parentPath)
           else if (tabIsTable) loadTable(tab.uid)
         })
-      })
+      }, row.connId)
     })
   }
 
@@ -525,6 +571,7 @@ Item {
     list[i] = Object.assign({}, list[i], fields)
     tabs = list
     saveStateTimer.restart()
+    if (i === currentTab && fields.database !== undefined && dbField) dbField.text = fields.database
     if (i === currentTab && (fields.results !== undefined || fields.resultIndex !== undefined
                              || fields.data !== undefined || fields.inserted !== undefined)) showResult()
   }
@@ -1421,9 +1468,12 @@ Item {
 
             TextArea {
               id: editor
+              // The editor's own glyphs are transparent: the colored copy
+              // below (highlightLayer) shows through at the same positions.
+              readonly property bool highlighted: text.length > 0 && text.length <= Highlighter.MAX_LENGTH
               font.family: root.fontFamily
               font.pixelSize: root.fontSize + 1
-              color: root.fg
+              color: highlighted ? "transparent" : root.fg
               selectionColor: Util.alpha(root.accent, 0.35)
               selectedTextColor: root.fg
               placeholderText: root.editorHint()
@@ -1435,6 +1485,37 @@ Item {
               topPadding: 10
               background: Rectangle { color: "transparent" }
               onTextChanged: if (!root.loadingEditor) saveStateTimer.restart()
+
+              Text {
+                id: highlightLayer
+                z: -1
+                x: editor.leftPadding
+                y: editor.topPadding
+                visible: editor.highlighted
+                textFormat: Text.RichText
+                font: editor.font
+                color: root.fg
+                text: editor.highlighted ? root.highlight(editor.text, root.editorDialect) : ""
+              }
+
+              cursorDelegate: Rectangle {
+                id: caret
+                width: 2
+                color: root.accent
+                visible: editor.activeFocus
+                SequentialAnimation on opacity {
+                  running: editor.activeFocus
+                  loops: Animation.Infinite
+                  PropertyAction { value: 1 }
+                  PauseAnimation { duration: 550 }
+                  PropertyAction { value: 0 }
+                  PauseAnimation { duration: 450 }
+                }
+                Connections {
+                  target: editor
+                  function onCursorPositionChanged() { caret.opacity = 1 }
+                }
+              }
 
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Tab && !(event.modifiers & Qt.ControlModifier)) {
@@ -1677,6 +1758,7 @@ Item {
       property string sql: ""
       property string confirmText: ""
       property bool danger: false
+      property string connId: ""
       property var onYes: null
       anchors.fill: parent
       visible: opened
@@ -1729,9 +1811,9 @@ Item {
               id: sqlText
               anchors.fill: parent
               anchors.margins: 8
-              text: askDialog.sql
+              text: root.highlight(askDialog.sql, root.connById(askDialog.connId) ? root.connById(askDialog.connId).type : "sql")
               wrapMode: Text.WrapAnywhere
-              textFormat: Text.PlainText
+              textFormat: Text.RichText
               color: root.fg
               font.family: root.fontFamily
               font.pixelSize: root.fontSize
