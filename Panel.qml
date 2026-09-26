@@ -126,6 +126,9 @@ Item {
   onCurrentTabChanged: {
     if (filterField) filterField.text = tabIsTable ? tab.where : ""
     if (dbField) dbField.text = tab ? tab.database : ""
+    Qt.callLater(function() {
+      if (currentTab >= 0 && currentTab < tabs.length) tabList.positionViewAtIndex(currentTab, ListView.Contain)
+    })
   }
 
   // ---- syntax colors (from the Omarchy theme, live on theme switch) --------
@@ -394,6 +397,90 @@ Item {
     }
   }
 
+  // ---- sidebar keyboard navigation ----------------------------------------
+  property string typeAhead: ""
+
+  function treeIndex(key) {
+    for (var i = 0; i < treeRows.length; i++) if (treeRows[i].key === key) return i
+    return -1
+  }
+
+  function selectTreeRow(i) {
+    if (i < 0 || i >= treeRows.length) return
+    selectedKey = treeRows[i].key
+    tree.positionViewAtIndex(i, ListView.Contain)
+  }
+
+  // Next non-placeholder row from `from` going `dir` (±1); `from` if none.
+  function treeStep(from, dir, count) {
+    var at = from
+    for (var n = 0; n < (count || 1); n++) {
+      var next = at
+      for (var i = at + dir; i >= 0 && i < treeRows.length; i += dir)
+        if (!treeRows[i].placeholder) { next = i; break }
+      if (next === at) break
+      at = next
+    }
+    return at
+  }
+
+  function treeMenuAt(i) {
+    var item = tree.itemAtIndex(i)
+    if (!item) return
+    var p = item.mapToItem(contextMenu, 24 + treeRows[i].depth * 14, item.height)
+    contextMenu.returnFocus = tree
+    contextMenu.popup(rowMenu(treeRows[i]), p.x, p.y, true)
+  }
+
+  function treeKeyPressed(event) {
+    var i = treeIndex(selectedKey)
+    var row = i >= 0 ? treeRows[i] : null
+    var k = event.key
+    var page = Math.max(1, Math.floor(tree.height / 26) - 1)
+    var ctrl = event.modifiers & Qt.ControlModifier
+    event.accepted = true
+    if (k === Qt.Key_Down) selectTreeRow(treeStep(i, 1))
+    else if (k === Qt.Key_Up) selectTreeRow(i < 0 ? treeStep(treeRows.length, -1) : treeStep(i, -1))
+    else if (k === Qt.Key_Home) selectTreeRow(treeStep(-1, 1))
+    else if (k === Qt.Key_End) selectTreeRow(treeStep(treeRows.length, -1))
+    else if (k === Qt.Key_PageDown) selectTreeRow(treeStep(i, 1, page))
+    else if (k === Qt.Key_PageUp) selectTreeRow(treeStep(Math.max(i, 0), -1, page))
+    else if (k === Qt.Key_Tab) focusMain()
+    else if (!row) event.accepted = false
+    else if (k === Qt.Key_Right) {
+      if (row.leaf) return
+      if (!row.expanded) toggleNode(row.connId, row.path, false)
+      else if (i + 1 < treeRows.length && treeRows[i + 1].depth > row.depth && !treeRows[i + 1].placeholder)
+        selectTreeRow(i + 1)
+    } else if (k === Qt.Key_Left) {
+      if (!row.leaf && row.expanded) toggleNode(row.connId, row.path, false)
+      else if (!row.isConn) selectTreeRow(treeIndex(nodeKey(row.connId, row.parentPath)))
+    } else if (k === Qt.Key_Return || k === Qt.Key_Enter) {
+      if (row.isConn || !(row.open || row.action)) toggleNode(row.connId, row.path, row.leaf)
+      else activateRow(row)
+    } else if (k === Qt.Key_Space) {
+      if (row.leaf) activateRow(row)
+      else toggleNode(row.connId, row.path, false)
+    } else if (k === Qt.Key_Menu || (k === Qt.Key_F10 && event.modifiers & Qt.ShiftModifier)) treeMenuAt(i)
+    else if (k === Qt.Key_Delete) {
+      if (row.isConn) confirmDeleteConnection(row)
+      else if (row.ops.indexOf("drop") >= 0) runOp(row, "drop")
+    } else if (k === Qt.Key_F2 && row.isConn) connDialog.openEdit(row.conn)
+    else if (!ctrl && event.text && event.text.length === 1 && event.text > " ") {
+      // Type-ahead: jump to the next row whose name starts with what was typed.
+      typeAhead = typeAheadTimer.running ? typeAhead + event.text.toLowerCase() : event.text.toLowerCase()
+      typeAheadTimer.restart()
+      for (var n = typeAhead.length > 1 ? 0 : 1; n <= treeRows.length; n++) {
+        var j = (i + n) % treeRows.length
+        var r = treeRows[j]
+        if (!r.placeholder && String(r.rawLabel || r.label).toLowerCase().indexOf(typeAhead) === 0) {
+          selectTreeRow(j)
+          break
+        }
+      }
+    } else event.accepted = false
+  }
+
   function connDetail(c) {
     if (c.type === "sqlite") return String(c.file || "").replace(/^.*\//, "")
     if (c.uri) return c.uri.replace(/\/\/[^@]*@/, "//")
@@ -608,6 +695,72 @@ Item {
     loadEditor()
     if (tabIsTable && !tab.data && !tab.loading) loadTable(tab.uid)
     saveStateTimer.restart()
+  }
+
+  function cycleTab(dir) {
+    if (tabs.length > 1) selectTab((currentTab + dir + tabs.length) % tabs.length)
+  }
+
+  // Close every tab matching `filter`, asking once when some of them hold
+  // unsaved table edits.
+  function closeTabs(filter) {
+    saveEditor()
+    var victims = tabs.filter(filter)
+    if (!victims.length) return
+    var dirty = victims.filter(function(t) { return buildChanges(t).length > 0 })
+    var run = function() {
+      var uids = victims.map(function(t) { return t.uid })
+      var old = currentTab, curUid = tab ? tab.uid : -1, before = 0
+      var keep = []
+      for (var i = 0; i < tabs.length; i++) {
+        if (uids.indexOf(tabs[i].uid) >= 0) continue
+        if (i < old) before++
+        keep.push(tabs[i])
+      }
+      tabs = keep
+      if (!keep.length) { currentTab = -1; newTab("", "", ""); return }
+      var idx = tabIndex(curUid)
+      currentTab = idx >= 0 ? idx : Math.min(before, keep.length - 1)
+      loadEditor()
+      if (tabIsTable && !tab.data && !tab.loading) loadTable(tab.uid)
+      saveStateTimer.restart()
+    }
+    if (dirty.length) ask(tr("closeAll"), tr("discardMany", dirty.length), "", tr("discard"), true, run)
+    else run()
+  }
+
+  function closeAllTabs() { closeTabs(function() { return true }) }
+
+  function tabMenu(i, x, y) {
+    var uid = tabs[i].uid
+    contextMenu.returnFocus = tabIsTable ? grid : editor
+    contextMenu.popup([
+      { text: tr("closeTab") + "  (Ctrl+W)", icon: I18n.glyph.close, run: function() { closeTab(tabIndex(uid)) } },
+      { text: tr("closeOthers"), icon: I18n.glyph.close, run: function() { closeTabs(function(t) { return t.uid !== uid }) } },
+      { text: tr("closeRight"), icon: I18n.glyph.close,
+        run: function() { var at = tabIndex(uid); closeTabs(function(t) { return tabIndex(t.uid) > at }) } },
+      null,
+      { text: tr("closeAll") + "  (Ctrl+Shift+W)", icon: I18n.glyph.closeAll, danger: true, run: closeAllTabs }
+    ], x, y)
+  }
+
+  // Keyboard-friendly list of the open tabs (Ctrl+P).
+  function showTabSwitcher() {
+    var items = tabs.map(function(t, i) {
+      var c = connById(t.connId)
+      return { text: (i < 9 ? (i + 1) + "  " : "") + (buildChanges(t).length ? "● " : "") + t.title,
+               icon: t.kind === "table" ? I18n.glyph.table : (c ? I18n.types[c.type].icon : ""),
+               run: function() { selectTab(i); focusMain() } }
+    })
+    var p = tabSwitchButton.mapToItem(contextMenu, tabSwitchButton.width - 260, tabSwitchButton.height)
+    contextMenu.returnFocus = tabIsTable ? grid : editor
+    contextMenu.popup(items, p.x, p.y, true)
+    contextMenu.current = currentTab
+  }
+
+  function focusMain() {
+    if (tabIsTable) grid.forceActiveFocus()
+    else editor.forceActiveFocus()
   }
 
   property bool loadingEditor: false
@@ -894,6 +1047,11 @@ Item {
   }
 
   Timer {
+    id: typeAheadTimer
+    interval: 800
+  }
+
+  Timer {
     id: toastTimer
     interval: 3500
     onTriggered: root.toastText = ""
@@ -923,8 +1081,20 @@ Item {
     Shortcut { sequence: "Ctrl+T"; onActivated: root.newTab("", "", "") }
     Shortcut { sequence: "Ctrl+W"; onActivated: if (root.currentTab >= 0) root.closeTab(root.currentTab) }
     Shortcut { sequence: "Ctrl+N"; onActivated: connDialog.openNew() }
-    Shortcut { sequence: "Ctrl+Tab"; onActivated: root.selectTab((root.currentTab + 1) % root.tabs.length) }
-    Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: root.selectTab((root.currentTab - 1 + root.tabs.length) % root.tabs.length) }
+    Shortcut { sequence: "Ctrl+Shift+W"; onActivated: root.closeAllTabs() }
+    Shortcut { sequences: ["Ctrl+Tab", "Ctrl+PgDown"]; onActivated: root.cycleTab(1) }
+    Shortcut { sequences: ["Ctrl+Shift+Tab", "Ctrl+Backtab", "Ctrl+Shift+Backtab", "Ctrl+PgUp"]; onActivated: root.cycleTab(-1) }
+    Shortcut { sequence: "Ctrl+P"; onActivated: root.showTabSwitcher() }
+    Shortcut { sequence: "Alt+1"; onActivated: root.selectTab(0) }
+    Shortcut { sequence: "Alt+2"; onActivated: root.selectTab(1) }
+    Shortcut { sequence: "Alt+3"; onActivated: root.selectTab(2) }
+    Shortcut { sequence: "Alt+4"; onActivated: root.selectTab(3) }
+    Shortcut { sequence: "Alt+5"; onActivated: root.selectTab(4) }
+    Shortcut { sequence: "Alt+6"; onActivated: root.selectTab(5) }
+    Shortcut { sequence: "Alt+7"; onActivated: root.selectTab(6) }
+    Shortcut { sequence: "Alt+8"; onActivated: root.selectTab(7) }
+    Shortcut { sequence: "Alt+9"; onActivated: root.selectTab(root.tabs.length - 1) }
+    Shortcut { sequence: "Ctrl+Shift+E"; onActivated: tree.forceActiveFocus() }
     Shortcut {
       sequence: "Escape"
       onActivated: {
@@ -940,6 +1110,7 @@ Item {
       sequences: [StandardKey.Copy]
       enabled: grid.activeFocus && grid.selRow >= 0 && grid.editRow < 0
       onActivated: {
+        if (grid.selectionCount() > 1) { root.copyText(grid.selectedRowsText()); return }
         var v = grid.selectedValue()
         root.copyText(v === null || v === undefined ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v)))
       }
@@ -1011,7 +1182,14 @@ Item {
           clip: true
           model: root.treeRows
           boundsBehavior: Flickable.StopAtBounds
+          keyNavigationEnabled: false
+          activeFocusOnTab: true
           ScrollBar.vertical: ScrollBar {}
+
+          // Arrows move, Right/Left expand/collapse, Enter opens, Menu key
+          // shows the actions, letters jump to a name.
+          Keys.onPressed: function(event) { root.treeKeyPressed(event) }
+          onActiveFocusChanged: if (activeFocus && root.treeIndex(root.selectedKey) < 0) root.selectTreeRow(root.treeStep(-1, 1))
 
           delegate: Rectangle {
             id: rowDelegate
@@ -1021,8 +1199,15 @@ Item {
             readonly property var quickOps: r.isConn ? [] : r.ops.filter(function(o) { return o === "data" || o === "ddl" || o === "create" })
             width: tree.width
             height: r.isConn ? 32 : 26
-            color: root.selectedKey === r.key ? Util.alpha(root.accent, 0.14)
+            color: root.selectedKey === r.key ? Util.alpha(root.accent, tree.activeFocus ? 0.24 : 0.14)
               : (hovered ? Util.alpha(root.fg, 0.05) : "transparent")
+
+            Rectangle {
+              visible: tree.activeFocus && root.selectedKey === rowDelegate.r.key
+              width: 2
+              height: parent.height
+              color: root.accent
+            }
 
             MouseArea {
               id: rowMouse
@@ -1031,9 +1216,11 @@ Item {
               acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
               onClicked: function(m) {
                 var row = rowDelegate.r
+                tree.forceActiveFocus()
                 if (row.placeholder) return
                 if (m.button === Qt.RightButton) {
                   root.selectedKey = row.key
+                  contextMenu.returnFocus = tree
                   var p = rowMouse.mapToItem(contextMenu, m.x, m.y)
                   contextMenu.popup(root.rowMenu(row), p.x, p.y)
                   return
@@ -1147,6 +1334,7 @@ Item {
                 horizontalPadding: 5; verticalPadding: 2
                 onClicked: {
                   root.selectedKey = rowDelegate.r.key
+                  contextMenu.returnFocus = tree
                   var p = mapToItem(contextMenu, 0, height)
                   contextMenu.popup(root.rowMenu(rowDelegate.r), p.x, p.y)
                 }
@@ -1222,13 +1410,21 @@ Item {
           ListView {
             id: tabList
             anchors.left: parent.left
-            anchors.right: addTab.left
+            anchors.right: tabButtons.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             orientation: ListView.Horizontal
             clip: true
             model: root.tabs
             boundsBehavior: Flickable.StopAtBounds
+
+            // Mouse wheel scrolls the strip sideways.
+            WheelHandler {
+              onWheel: function(event) {
+                var d = event.angleDelta.y !== 0 ? event.angleDelta.y : event.angleDelta.x
+                tabList.contentX = Math.max(0, Math.min(tabList.contentWidth - tabList.width, tabList.contentX - d))
+              }
+            }
 
             delegate: Rectangle {
               id: tabItem
@@ -1248,10 +1444,13 @@ Item {
                 id: tabMouse
                 anchors.fill: parent
                 hoverEnabled: true
-                acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+                acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                 onClicked: function(m) {
                   if (m.button === Qt.MiddleButton) root.closeTab(tabItem.index)
-                  else root.selectTab(tabItem.index)
+                  else if (m.button === Qt.RightButton) {
+                    var p = tabMouse.mapToItem(contextMenu, m.x, m.y)
+                    root.tabMenu(tabItem.index, p.x, p.y)
+                  } else root.selectTab(tabItem.index)
                 }
               }
 
@@ -1297,14 +1496,29 @@ Item {
             }
           }
 
-          Button {
-            id: addTab
+          Row {
+            id: tabButtons
             anchors.right: parent.right
             anchors.rightMargin: 4
             anchors.verticalCenter: parent.verticalCenter
-            iconText: I18n.glyph.add
-            tooltipText: root.tr("newQuery") + " (Ctrl+T)"
-            onClicked: root.newTab("", "", "")
+            spacing: 2
+
+            Button {
+              iconText: I18n.glyph.add
+              tooltipText: root.tr("newQuery") + " (Ctrl+T)"
+              onClicked: root.newTab("", "", "")
+            }
+            Button {
+              id: tabSwitchButton
+              iconText: I18n.glyph.tabList
+              tooltipText: root.tr("openTabs") + " (Ctrl+P · Ctrl+Tab · Alt+1…9)"
+              onClicked: root.showTabSwitcher()
+            }
+            Button {
+              iconText: I18n.glyph.closeAll
+              tooltipText: root.tr("closeAll") + " (Ctrl+Shift+W)"
+              onClicked: root.closeAllTabs()
+            }
           }
         }
 
@@ -1379,7 +1593,7 @@ Item {
 
           TextField {
             id: filterField
-            width: Math.max(160, tableToolbar.width - editButtons.width - pager.width - 3 * Style.spacing.sm - 40)
+            width: Math.max(160, tableToolbar.width - editButtons.width - pager.width - 4 * Style.spacing.sm - 76)
             text: root.tabIsTable ? root.tab.where : ""
             placeholderText: root.filterHint()
             onAccepted: root.reloadTable({ where: text, offset: 0 })
@@ -1390,6 +1604,12 @@ Item {
             iconSpinning: root.tabIsTable && root.tab.loading === true
             tooltipText: root.tr("reload")
             onClicked: root.reloadTable({ where: filterField.text })
+          }
+
+          Button {
+            iconText: I18n.glyph.selectAll
+            tooltipText: root.tr("selectAll") + " (Ctrl+A)"
+            onClicked: grid.selectAll()
           }
 
           Row {
@@ -1520,6 +1740,9 @@ Item {
               Keys.onPressed: function(event) {
                 if (event.key === Qt.Key_Tab && !(event.modifiers & Qt.ControlModifier)) {
                   editor.insert(editor.cursorPosition, "  ")
+                  event.accepted = true
+                } else if ((event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) && event.modifiers & Qt.ControlModifier) {
+                  root.cycleTab(event.key === Qt.Key_Backtab || event.modifiers & Qt.ShiftModifier ? -1 : 1)
                   event.accepted = true
                 }
               }

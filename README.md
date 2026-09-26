@@ -79,9 +79,26 @@ Open the window from the bar icon, with `Super+Alt+D`, or with `omarchy-dbclient
 | `Ctrl+Enter` / `F5`       | Run (selection or everything); reload in a table tab |
 | `Ctrl+S` / `Ctrl+I`       | Save changes / add a row (table tab) |
 | `Ctrl+T` / `Ctrl+W`       | New / close query tab          |
-| `Ctrl+Tab`                | Next tab                       |
+| `Ctrl+Shift+W`            | Close all tabs (also the `⊠` button; right-click a tab for close others / to the right) |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous tab (also `Ctrl+PgDown` / `Ctrl+PgUp`) |
+| `Alt+1` … `Alt+8`, `Alt+9` | Go to tab 1…8, last tab        |
+| `Ctrl+P`                  | Open-tabs switcher (also the `☰` button) |
+| `Ctrl+Shift+E`            | Focus the sidebar              |
 | `Ctrl+N`                  | New connection                 |
 | `Esc`                     | Close the current dialog       |
+
+Sidebar keyboard navigation (after `Ctrl+Shift+E` or a click):
+
+| Key                       | Action                                         |
+|---------------------------|------------------------------------------------|
+| `↑` `↓` `PgUp` `PgDown` `Home` `End` | Move                                |
+| `→` / `←`                 | Expand (then go to first child) / collapse (then go to parent) |
+| `Enter`                   | Open the table data / DDL, or expand           |
+| `Space`                   | Expand / collapse                              |
+| `Menu` / `Shift+F10`      | Actions menu (arrows + `Enter` inside)         |
+| `Del` / `F2`              | Drop the object (with confirmation) / edit the connection |
+| letters                   | Jump to the next name starting with them       |
+| `Tab`                     | Back to the editor / grid                      |
 
 UI language: the `AUTO / EN / FR` switch at the bottom of the sidebar.
 
@@ -112,7 +129,8 @@ Right-click a node, or use its `⋯` button, to see what you can do with it:
 | Edit a cell                     | double-click, `F2`, `Enter`, or just start typing          |
 | Next cell / next row            | `Tab` / `Enter` while editing, `Esc` cancels               |
 | Add a row                       | `+` or `Ctrl+I`. Unset cells stay `DEFAULT`                 |
-| Select rows                     | click the row number (`Ctrl` toggles, `Shift` extends)     |
+| Select rows                     | click the row number (`Ctrl` toggles, `Shift` extends, `Shift+↑↓` too) |
+| Select all                      | `Ctrl+A` or the `✓✓` button; `Ctrl+C` then copies the rows as TSV |
 | Delete / restore selected rows  | `−` or `Del`                                               |
 | Set NULL                        | `NULL` button                                              |
 | Save                            | `Save (n)` or `Ctrl+S`                                     |

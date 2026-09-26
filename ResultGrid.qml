@@ -165,6 +165,40 @@ Item {
     return out.sort(function(a, b) { return a - b })
   }
 
+  function selectAll() {
+    if (!rows.length) return
+    var s = {}
+    for (var i = 0; i < rows.length; i++) s[i] = true
+    selectedRows = s
+    anchorRow = 0
+    if (selRow < 0) selRow = 0
+    if (selCol < 0) selCol = 0
+    grid.forceActiveFocus()
+  }
+
+  function selectionCount() {
+    var n = 0
+    for (var k in selectedRows) if (selectedRows[k]) n++
+    return n
+  }
+
+  // Selected rows as tab-separated text (with a header line), for pasting
+  // into a spreadsheet.
+  function selectedRowsText() {
+    var cell = function(v) {
+      if (v === null || v === undefined) return ""
+      return (typeof v === "object" ? JSON.stringify(v) : String(v)).replace(/[\t\n\r]/g, " ")
+    }
+    var out = [columns.map(cell).join("\t")]
+    var list = selectedRowList()
+    for (var i = 0; i < list.length; i++) {
+      var line = []
+      for (var c = 0; c < columns.length; c++) line.push(cell(valueAt(list[i], c)))
+      out.push(line.join("\t"))
+    }
+    return out.join("\n") + "\n"
+  }
+
   function selectRow(r, modifiers) {
     var s = {}
     if (modifiers & Qt.ShiftModifier && anchorRow >= 0) {
@@ -421,6 +455,11 @@ Item {
     else if (event.key === Qt.Key_Up) selRow = Math.max(0, selRow - 1)
     else if (event.key === Qt.Key_Right) selCol = Math.min(columns.length - 1, selCol + 1)
     else if (event.key === Qt.Key_Left) selCol = Math.max(0, selCol - 1)
+    else if (event.key === Qt.Key_A && ctrl) { selectAll(); event.accepted = true; return }
+    else if (event.key === Qt.Key_Home && ctrl) selRow = rows.length ? 0 : -1
+    else if (event.key === Qt.Key_End && ctrl) selRow = rows.length - 1
+    else if (event.key === Qt.Key_PageDown) selRow = Math.min(rows.length - 1, selRow + Math.max(1, Math.floor(list.height / rowHeight) - 1))
+    else if (event.key === Qt.Key_PageUp) selRow = Math.max(0, selRow - Math.max(1, Math.floor(list.height / rowHeight) - 1))
     else if (event.key === Qt.Key_F2) beginEdit(selRow, selCol)
     else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
       if (!beginEdit(selRow, selCol)) cellActivated(selRow, selCol)
@@ -431,7 +470,14 @@ Item {
     if (handled) {
       event.accepted = true
       if (selRow >= 0 && event.key !== Qt.Key_Delete) {
-        if (!(event.modifiers & Qt.ShiftModifier)) { var s = {}; s[selRow] = true; selectedRows = s; anchorRow = selRow }
+        var s = {}
+        if (event.modifiers & Qt.ShiftModifier && anchorRow >= 0) {
+          for (var i = Math.min(anchorRow, selRow); i <= Math.max(anchorRow, selRow); i++) s[i] = true
+        } else {
+          s[selRow] = true
+          anchorRow = selRow
+        }
+        selectedRows = s
         list.positionViewAtIndex(selRow, ListView.Contain)
       }
     }
