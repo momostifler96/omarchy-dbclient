@@ -44,6 +44,7 @@ Item {
   }
 
   function close() {
+    contextMenu.close()
     saveEditor()
     saveState()
     closingFromHost = true
@@ -61,6 +62,19 @@ Item {
   function expand(connId) {
     if (!opened) open("")
     var go = function() { if (!stateFor(nodeKey(connId, [])).expanded) toggleNode(connId, [], false) }
+    if (ready) go()
+    else pendingOpen = go
+  }
+
+  // {"connId": "...", "path": [...]}: expand one node of the tree (its
+  // ancestors must already be expanded).
+  function expandJson(arg) {
+    if (!opened) open("")
+    var o = JSON.parse(arg)
+    var go = function() {
+      var st = stateFor(nodeKey(o.connId, o.path || []))
+      if (!st.expanded) toggleNode(o.connId, o.path || [], false)
+    }
     if (ready) go()
     else pendingOpen = go
   }
