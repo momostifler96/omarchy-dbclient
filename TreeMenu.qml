@@ -4,6 +4,7 @@ import qs.Ui
 
 // Right-click menu for the schema tree. popup(items, x, y) with items
 // [{ text, icon, danger, run: function() {} }] (null inserts a separator).
+// Keyboard: Up/Down, Home/End, Enter/Space, Escape.
 Item {
   id: menu
 
@@ -12,16 +13,48 @@ Item {
   property real menuX: 0
   property real menuY: 0
 
-  function popup(list, x, y) {
+  property int current: -1          // keyboard-highlighted entry
+  property Item returnFocus: null   // gets the focus back on close
+
+  function popup(list, x, y, keyboard) {
     items = list
     menuX = x
     menuY = y
+    current = keyboard ? step(-1, 1) : -1
     opened = true
+    forceActiveFocus()
   }
 
-  function close() { opened = false }
+  function close() {
+    if (!opened) return
+    opened = false
+    if (returnFocus) returnFocus.forceActiveFocus()
+  }
+
+  function step(from, dir) {
+    for (var i = from + dir; i >= 0 && i < items.length; i += dir)
+      if (items[i]) return i
+    return from
+  }
+
+  function trigger(i) {
+    var entry = items[i]
+    if (!entry) return
+    close()
+    if (typeof entry.run === "function") entry.run()
+  }
 
   visible: opened
+
+  Keys.onPressed: function(event) {
+    if (event.key === Qt.Key_Down) current = step(current, 1)
+    else if (event.key === Qt.Key_Up) current = step(current < 0 ? items.length : current, -1)
+    else if (event.key === Qt.Key_Home) current = step(-1, 1)
+    else if (event.key === Qt.Key_End) current = step(items.length, -1)
+    else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) trigger(current)
+    else if (event.key === Qt.Key_Escape || event.key === Qt.Key_Left) close()
+    event.accepted = true
+  }
 
   MouseArea {
     anchors.fill: parent
@@ -54,6 +87,7 @@ Item {
         delegate: Item {
           id: entry
           required property var modelData
+          required property int index
           width: column.width
           height: modelData ? 28 : 9
 
@@ -69,7 +103,7 @@ Item {
             visible: !!entry.modelData
             anchors.fill: parent
             radius: Style.cornerRadius
-            color: hover.containsMouse ? Util.alpha(entry.modelData && entry.modelData.danger ? Color.urgent : Color.foreground, 0.10) : "transparent"
+            color: hover.containsMouse || menu.current === entry.index ? Util.alpha(entry.modelData && entry.modelData.danger ? Color.urgent : Color.foreground, 0.10) : "transparent"
 
             Text {
               id: icon
@@ -97,11 +131,8 @@ Item {
               id: hover
               anchors.fill: parent
               hoverEnabled: true
-              onClicked: {
-                var run = entry.modelData.run
-                menu.close()
-                if (typeof run === "function") run()
-              }
+              onEntered: menu.current = entry.index
+              onClicked: menu.trigger(entry.index)
             }
           }
         }
