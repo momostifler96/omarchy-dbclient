@@ -5,6 +5,10 @@ the VS Code *Database Client* extension: a schema tree with views, functions,
 procedures, sequences and triggers, query tabs, an editable data grid, and a
 driver installer that asks before touching your system.
 
+![DB Client](screenshots/query-editor.png)
+
+More screenshots and a short presentation: [PLUGIN.md](PLUGIN.md).
+
 | Engine            | Driver (Python)       | Objects in the tree                                                              | Query language                    |
 |-------------------|-----------------------|----------------------------------------------------------------------------------|-----------------------------------|
 | MySQL / MariaDB   | `PyMySQL`             | tables, views, functions, procedures, triggers, events, indexes                  | SQL, `DELIMITER` supported        |
