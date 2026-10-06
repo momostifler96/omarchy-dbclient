@@ -21,6 +21,8 @@ native window that follows your Omarchy theme.
 - **Editable data grid**: edit cells inline, add rows, delete rows, set `NULL`, then review and
   **Save** all pending changes in a single transaction (or discard them). Filter with a `WHERE`
   clause (or a Mongo filter / Redis pattern), sort by column, paginate.
+  Drag headers to reorder columns, resize them, and show / hide columns from the 👁 button —
+  the layout is remembered per table.
 - **Selection & export**: select all rows (`Ctrl+A`), copy cells or rows (TSV, ready for a spreadsheet),
   copy as CSV / JSON, export to CSV.
 - **Keyboard first**: switch tabs with `Ctrl+Tab`, `Alt+1…9` or the `Ctrl+P` tab switcher, close all tabs
