@@ -1169,9 +1169,26 @@ Item {
       anchors.fill: parent
       orientation: Qt.Horizontal
 
-      handle: Rectangle {
-        implicitWidth: 1
-        color: SplitHandle.hovered || SplitHandle.pressed ? root.accent : root.line
+      // 10 px grab zone around a 1 px line (3 px + grip while hovered/dragged)
+      handle: Item {
+        id: hHandle
+        implicitWidth: 10
+        readonly property bool active: SplitHandle.hovered || SplitHandle.pressed
+        Rectangle {
+          anchors.horizontalCenter: parent.horizontalCenter
+          width: hHandle.active ? 3 : 1
+          height: parent.height
+          color: hHandle.active ? root.accent : root.line
+        }
+        Column {
+          visible: hHandle.active
+          anchors.centerIn: parent
+          spacing: 3
+          Repeater {
+            model: 3
+            delegate: Rectangle { width: 5; height: 5; radius: 2.5; color: root.accent }
+          }
+        }
       }
 
       // ---- sidebar --------------------------------------------------------
@@ -1723,9 +1740,25 @@ Item {
           anchors.topMargin: 8
           orientation: Qt.Vertical
 
-          handle: Rectangle {
-            implicitHeight: 1
-            color: SplitHandle.hovered || SplitHandle.pressed ? root.accent : root.line
+          handle: Item {
+            id: vHandle
+            implicitHeight: 10
+            readonly property bool active: SplitHandle.hovered || SplitHandle.pressed
+            Rectangle {
+              anchors.verticalCenter: parent.verticalCenter
+              width: parent.width
+              height: vHandle.active ? 3 : 1
+              color: vHandle.active ? root.accent : root.line
+            }
+            Row {
+              visible: vHandle.active
+              anchors.centerIn: parent
+              spacing: 3
+              Repeater {
+                model: 3
+                delegate: Rectangle { width: 5; height: 5; radius: 2.5; color: root.accent }
+              }
+            }
           }
 
           ScrollView {
