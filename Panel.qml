@@ -234,7 +234,7 @@ Item {
     var list = tabs.map(function(t) {
       if (t.kind === "table")
         return { uid: t.uid, kind: "table", title: t.title, connId: t.connId, database: t.database, path: t.path,
-                 where: t.where, order: t.order, desc: t.desc }
+                 where: t.where, order: t.order, desc: t.desc, layout: t.layout || null }
       return { uid: t.uid, kind: "query", title: t.title, connId: t.connId, database: t.database, text: t.text }
     })
     backend.request("save_state", { state: { tabs: list, current: currentTab } }, null)
@@ -609,6 +609,7 @@ Item {
     saved = saved || {}
     return { uid: uid, kind: "table", title: title, connId: connId, database: database || "", path: path,
              where: saved.where || "", order: saved.order || "", desc: saved.desc === true, offset: 0,
+             layout: saved.layout || null,
              data: null, edits: {}, deleted: {}, inserted: 0, loading: false, error: "", elapsedMs: 0 }
   }
 
@@ -807,6 +808,10 @@ Item {
       grid.setResult(tabResult && tabResult.columns.length ? tabResult : null)
       grid.sortCol = -1
     }
+    // Every change to the layout is stored in the tab, so a tab without one
+    // has the default layout (another tab with the same columns may not).
+    if (tab && tab.layout) grid.applyLayout(tab.layout)
+    else grid.clearLayout()
   }
 
   // ---- queries ------------------------------------------------------------
@@ -888,6 +893,35 @@ Item {
   function sortTable(col) {
     var name = tab.data.columns[col]
     reloadTable({ order: name, desc: tab.order === name ? !tab.desc : false, offset: 0 })
+  }
+
+  // desc: true/false, or null to clear the sort
+  function sortBy(col, desc) {
+    if (tabIsTable) {
+      if (desc === null) reloadTable({ order: "", desc: false, offset: 0 })
+      else reloadTable({ order: tab.data.columns[col], desc: desc, offset: 0 })
+    } else if (desc !== null) grid.sortLocal(col, desc)
+  }
+
+  function headerMenu(col, x, y) {
+    var name = String(grid.columns[col])
+    var items = [
+      { text: tr("sortAsc"), icon: I18n.glyph.sortUp, run: function() { sortBy(col, false) } },
+      { text: tr("sortDesc"), icon: I18n.glyph.sortDown, run: function() { sortBy(col, true) } }
+    ]
+    if (tabIsTable && tab.order)
+      items.push({ text: tr("clearSort"), icon: I18n.glyph.close, run: function() { sortBy(col, null) } })
+    items.push(null)
+    if (grid.visibleCols.length > 1)
+      items.push({ text: tr("hideColumn"), icon: I18n.glyph.eyeClosed, run: function() { grid.setHidden(col, true) } })
+    items.push({ text: tr("columnsMenu"), icon: I18n.glyph.eye, run: function() { grid.columnsOpen = true } })
+    if (grid.hiddenCount > 0)
+      items.push({ text: tr("showAllColumns") + " (" + grid.hiddenCount + ")", icon: I18n.glyph.eye, run: function() { grid.showAllColumns() } })
+    items.push(null)
+    items.push({ text: tr("copyColumnName"), icon: I18n.glyph.copy, run: function() { copyText(name) } })
+    var p = grid.mapToItem(contextMenu, x, y)
+    contextMenu.returnFocus = grid
+    contextMenu.popup(items, p.x, p.y)
   }
 
   function setCell(r, c, value) {
@@ -1114,6 +1148,7 @@ Item {
       onActivated: {
         if (grid.editRow >= 0) grid.cancelEdit()
         else if (contextMenu.opened) contextMenu.close()
+        else if (grid.columnsOpen) grid.columnsOpen = false
         else if (cellDialog.opened) cellDialog.opened = false
         else if (askDialog.opened) askDialog.opened = false
         else if (driverDialog.opened && !driverDialog.busy) driverDialog.close()
@@ -1838,6 +1873,11 @@ Item {
               onCellActivated: function(r, c) { root.showCell(r, c) }
               onCellEdited: function(r, c, value) { root.setCell(r, c, value) }
               onDeleteRequested: root.toggleDeleteRows()
+              onSortRequested: function(c, desc) { root.sortBy(c, desc) }
+              onHeaderMenuRequested: function(c, x, y) { root.headerMenu(c, x, y) }
+              // Silent, like the editor text: the layout must not rebuild the tab strip.
+              onLayoutEdited: if (root.tab) { root.tab.layout = grid.layoutState(); saveStateTimer.restart() }
+              labels: ({ columns: root.tr("columnsTitle"), showAll: root.tr("showAllColumns"), reset: root.tr("resetColumns") })
               onHeaderClicked: function(c) {
                 if (root.tabIsTable) root.sortTable(c)
                 else grid.sortLocal(c)

@@ -140,7 +140,10 @@ Right-click a node, or use its `⋯` button, to see what you can do with it:
 | Save                            | `Save (n)` or `Ctrl+S`                                     |
 | Discard                         | `↶` (undo all pending changes)                             |
 | Filter                          | the `WHERE …` field (Mongo: `{age: {$gt: 18}}`, Redis: `MATCH` pattern) |
-| Sort                            | click a column header                                      |
+| Sort                            | click a column header (↑ / ↓ shows the order), or right-click it → *Sort ascending / descending / Clear sort* |
+| Reorder columns                 | drag a header left or right; or the 👁 corner button → ↑ ↓ |
+| Show / hide columns             | the 👁 button in the grid's top-left corner (badge = hidden count), or right-click a header → *Hide column* |
+| Resize a column                 | drag the edge of its header (16 px handle); double-click it for a wide column |
 | Pages                           | `‹` `›` and the page-size field                            |
 
 Changes stay pending until you save. Modified cells are highlighted, new rows
