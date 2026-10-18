@@ -144,6 +144,25 @@ Right-click a node, or use its `⋯` button, to see what you can do with it:
 | Reorder columns                 | drag a header left or right; or the 👁 corner button → ↑ ↓ |
 | Show / hide columns             | the 👁 button in the grid's top-left corner (badge = hidden count), or right-click a header → *Hide column* |
 | Resize a column                 | drag the edge of its header (16 px handle); double-click it for a wide column |
+| Follow a foreign key            | 🔗 marks FK columns: `↗` on the cell, `F12` or `Ctrl+click` opens the referenced table filtered on that row |
+| Pick a referenced value         | `⌕` on an editable FK cell, or `F4` (also while editing): search the referenced table and choose a row |
+| Rows referencing this row       | right-click a cell → *Rows of X referencing this row* opens the child table filtered |
+| Cell menu                       | right-click a cell (or the `Menu` key): references, copy value, set NULL, delete rows |
+
+Deleting rows that other tables still reference shows which tables and how many
+rows, then lets you choose:
+
+- **Delete in cascade** — the referencing rows are deleted first (recursively,
+  in the same transaction). Constraints the database already cascades
+  (`ON DELETE CASCADE / SET NULL`) are left to it.
+- **Disable constraints** — only the selected rows are deleted and the
+  references are left dangling: `FOREIGN_KEY_CHECKS = 0` (MySQL),
+  `PRAGMA foreign_keys = OFF` (SQLite), `session_replication_role = replica`
+  (PostgreSQL, superuser only), or the constraints are disabled and re-enabled
+  `NOVALIDATE` around the delete (Oracle).
+- **Cancel**.
+
+SQLite connections enforce foreign keys (`PRAGMA foreign_keys = ON`).
 | Pages                           | `‹` `›` and the page-size field                            |
 
 Changes stay pending until you save. Modified cells are highlighted, new rows

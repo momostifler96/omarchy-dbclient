@@ -14,10 +14,29 @@ Item {
   property real menuY: 0
 
   property int current: -1          // keyboard-highlighted entry
+  property real menuWidth: 260
+
+  TextMetrics {
+    id: metrics
+    font.family: Style.font.family
+    font.pixelSize: Style.font.body
+  }
+
+  // Wide enough for the longest entry (within reason).
+  function fitWidth(list) {
+    var w = 0
+    for (var i = 0; i < list.length; i++) {
+      if (!list[i]) continue
+      metrics.text = list[i].text
+      w = Math.max(w, metrics.advanceWidth)
+    }
+    return Math.min(560, Math.max(260, Math.ceil(w) + 56))
+  }
   property Item returnFocus: null   // gets the focus back on close
 
   function popup(list, x, y, keyboard) {
     items = list
+    menuWidth = fitWidth(list)
     menuX = x
     menuY = y
     current = keyboard ? step(-1, 1) : -1
@@ -66,7 +85,7 @@ Item {
     id: card
     x: Math.max(4, Math.min(menu.menuX, menu.width - width - 4))
     y: Math.max(4, Math.min(menu.menuY, menu.height - height - 4))
-    width: 260
+    width: Math.min(menu.menuWidth, menu.width - 8)
     height: column.implicitHeight + 8
     color: Color.popups.background
     borderSpec: Border.flat(Color.popups.border, Style.normalBorderWidth)

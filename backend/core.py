@@ -411,10 +411,31 @@ def sql_result(sql, database="", confirm=False, title=""):
 KEY = "__dbc_key"
 
 
+FK_DB_HANDLED = ("CASCADE", "SET NULL", "SET DEFAULT")   # the server deletes/updates the children itself
+CASCADE_DEPTH = 8
+
+
+def group_fks(rows):
+    """[(name, table_path, column, ref_path, ref_column, on_delete)] in
+    constraint/position order -> one dict per constraint."""
+    out, index = [], {}
+    for name, table, col, ref, ref_col, on_delete in rows:
+        key = (name, tuple(table), tuple(ref))
+        fk = index.get(key)
+        if fk is None:
+            fk = index[key] = {"name": name, "table": list(table), "columns": [], "refTable": list(ref),
+                               "refColumns": [], "onDelete": (on_delete or "NO ACTION").upper()}
+            out.append(fk)
+        fk["columns"].append(col)
+        fk["refColumns"].append(ref_col)
+    return out
+
+
 class Adapter:
     dialect = "sql"
     quote_char = '"'
     editable_kinds = ("table",)
+    text_type = "VARCHAR(4000)"   # CAST target used by the reference picker search
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -522,6 +543,8 @@ class Adapter:
             "hasMore": len(rows) > limit,
             "offset": int(offset or 0),
         })
+        fks, refs = self.fk_info(path)
+        res.update({"foreignKeys": fks, "referencedBy": refs})
         return res
 
     def key_where(self, mode, key, types, params):
@@ -534,7 +557,9 @@ class Adapter:
                          "%s = %s" % (self.q(c), self.param(v, types.get(c, ""), params)))
         return " AND ".join(parts)
 
-    def apply_changes(self, path, changes):
+    def apply_changes(self, path, changes, fk_mode=""):
+        """fk_mode: "" (let the server enforce constraints), "cascade" (delete
+        the referencing rows first) or "disable" (skip constraint checks)."""
         info = self.columns_info(path)
         types = {c["name"]: c["type"] for c in info}
         mode = self.key_mode(path, info)
@@ -561,12 +586,128 @@ class Adapter:
                 where = self.key_where(mode, ch["key"], types, params)
                 stmts.append((self.update_stmt(table, sets, where), params, True))
             elif op == "delete":
+                if fk_mode == "cascade":
+                    stmts += self.cascade_stmts(path, lambda p, k=ch["key"]: self.key_where(mode, k, types, p))
                 where = self.key_where(mode, ch["key"], types, params)
                 stmts.append(("DELETE FROM %s WHERE %s" % (table, where), params, True))
             else:
                 raise ValueError("Unknown change: %s" % op)
-        affected = self.transaction(path, stmts)
+        if fk_mode == "disable":
+            affected = self.transaction(path, stmts, disable_fk=True)
+        else:
+            affected = self.transaction(path, stmts)
         return {"applied": len(stmts), "affected": affected}
+
+    # -- foreign keys ---------------------------------------------------------
+    #   foreign_keys(path) -> group_fks(...) list of every constraint where the
+    #   table is the child ("table") or the parent ("refTable").
+
+    def foreign_keys(self, path):
+        return []
+
+    def table_label(self, path):
+        return ".".join(str(p) for p in path[1:])
+
+    def fk_split(self, path):
+        fks = self.foreign_keys(path) if path and path[0] in self.editable_kinds else []
+        out = [fk for fk in fks if fk["table"] == list(path)]
+        inc = [fk for fk in fks if fk["refTable"] == list(path)]
+        return out, inc
+
+    def subq(self, sql):
+        """Subquery used inside DELETE/UPDATE on a related table (MySQL needs a
+        derived table to read the table it deletes from)."""
+        return "(%s)" % sql
+
+    def tuple_sql(self, cols):
+        return self.q(cols[0]) if len(cols) == 1 else "(%s)" % ", ".join(self.q(c) for c in cols)
+
+    def fk_info(self, path):
+        """Foreign keys shown in the data editor."""
+        try:
+            out, inc = self.fk_split(path)
+        except Exception:
+            return [], []
+        return ([{"name": fk["name"], "columns": fk["columns"], "refPath": fk["refTable"],
+                  "refColumns": fk["refColumns"], "label": self.table_label(fk["refTable"])} for fk in out],
+                [{"name": fk["name"], "path": fk["table"], "columns": fk["columns"], "refColumns": fk["refColumns"],
+                  "onDelete": fk["onDelete"], "label": self.table_label(fk["table"])} for fk in inc])
+
+    def fk_lookup(self, path, column, search, limit):
+        """Rows of the table referenced by `column`, for the value picker."""
+        out, _ = self.fk_split(path)
+        fk = next((f for f in out if column in f["columns"]), None)
+        if fk is None:
+            raise ValueError("%s is not a foreign key" % column)
+        ref = fk["refTable"]
+        info = self.columns_info(ref)
+        names = [c["name"] for c in info]
+        extra = [c["name"] for c in info if c["name"] not in fk["refColumns"]
+                 and re.search(r"char|text|string|name|clob", c["type"] or "", re.I)]
+        extra += [n for n in names if n not in fk["refColumns"] and n not in extra]
+        cols = list(fk["refColumns"]) + extra[:4]
+        sql = "SELECT %s FROM %s" % (", ".join(self.q(c) for c in cols), self.table_sql(ref))
+        params = self.new_params()
+        if search and search.strip():
+            like = "%" + search.strip().lower() + "%"
+            conds = ["LOWER(CAST(%s AS %s)) LIKE %s" % (self.q(c), self.text_type, self.param(like, "", params))
+                     for c in cols]
+            sql += " WHERE " + " OR ".join(conds)
+        sql += " ORDER BY %s" % ", ".join(self.q(c) for c in fk["refColumns"])
+        columns, rows = self.fetch(ref, self.paginate(sql, 0, limit), params or None)
+        return {"columns": columns, "rows": [[cell(v) for v in r] for r in rows],
+                "fkColumns": fk["columns"], "refColumns": fk["refColumns"], "label": self.table_label(ref)}
+
+    def keys_where(self, path, keys, params):
+        """WHERE matching the given data-editor row keys."""
+        info = self.columns_info(path)
+        types = {c["name"]: c["type"] for c in info}
+        mode = self.key_mode(path, info)
+        if mode[0] is None:
+            raise ValueError(mode[1])
+        return "(%s)" % " OR ".join("(%s)" % self.key_where(mode, k, types, params) for k in keys)
+
+    def child_where(self, fk, parent_where):
+        """Rows of fk's child table pointing at parent rows matching
+        parent_where(params)."""
+        parent = fk["refTable"]
+
+        def where(params):
+            sub = "SELECT %s FROM %s WHERE %s" % (", ".join(self.q(c) for c in fk["refColumns"]),
+                                                  self.table_sql(parent), parent_where(params))
+            return "%s IN %s" % (self.tuple_sql(fk["columns"]), self.subq(sub))
+        return where
+
+    def delete_impact(self, path, keys):
+        """Rows of other tables that still reference the rows about to be deleted."""
+        _, inc = self.fk_split(path)
+        result = []
+        for fk in inc:
+            params = self.new_params()
+            where = self.child_where(fk, lambda p: self.keys_where(path, keys, p))(params)
+            _, rows = self.fetch(fk["table"], "SELECT COUNT(*) FROM %s WHERE %s" % (self.table_sql(fk["table"]), where),
+                                 params or None)
+            count = int(rows[0][0]) if rows else 0
+            if count:
+                result.append({"name": fk["name"], "label": self.table_label(fk["table"]), "path": fk["table"],
+                               "columns": fk["columns"], "onDelete": fk["onDelete"], "count": count})
+        return result
+
+    def cascade_stmts(self, path, parent_where, depth=0):
+        """DELETE statements, deepest first, removing the rows that reference
+        the parent rows through constraints the server will not cascade."""
+        if depth >= CASCADE_DEPTH:
+            return []
+        _, inc = self.fk_split(path)
+        stmts = []
+        for fk in inc:
+            if fk["onDelete"] in FK_DB_HANDLED:
+                continue
+            where = self.child_where(fk, parent_where)
+            stmts += self.cascade_stmts(fk["table"], where, depth + 1)
+            params = self.new_params()
+            stmts.append(("DELETE FROM %s WHERE %s" % (self.table_sql(fk["table"]), where(params)), params, False))
+        return stmts
 
     def check_rowcount(self, cur, sql, expect):
         if expect and cur.rowcount == 0:

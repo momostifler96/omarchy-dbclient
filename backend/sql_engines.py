@@ -9,7 +9,7 @@ import decimal
 import re
 import time
 
-from core import (Adapter, KEY, folder, message_result, node, require_driver, result_set,
+from core import (Adapter, KEY, folder, group_fks, message_result, node, require_driver, result_set,
                   split_sql, sql_result)
 
 TABLE_OPS = ["data", "select", "ddl", "create_index", "truncate", "drop"]
@@ -38,6 +38,8 @@ class SqliteAdapter(Adapter):
         import sqlite3
         path = os.path.expanduser(cfg.get("file") or cfg.get("database") or ":memory:")
         self.conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+        # SQLite only enforces foreign keys when asked to, per connection.
+        self.conn.execute("PRAGMA foreign_keys = ON")
 
     def close(self):
         self.conn.close()
@@ -120,6 +122,26 @@ class SqliteAdapter(Adapter):
             return (None, "WITHOUT ROWID table without a primary key: read-only")
         return ("rowid", 'rowid AS "%s"' % KEY)
 
+    text_type = "TEXT"
+
+    def foreign_keys(self, path):
+        name = path[1]
+        _, tables = self.fetch(path, "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+        rows = []
+        for (child,) in tables:
+            _, fks = self.fetch(path, "PRAGMA foreign_key_list(%s)" % self.q(child))
+            for fid, _seq, parent, frm, to, _upd, on_delete, _m in fks:
+                if child.lower() != name.lower() and parent.lower() != name.lower():
+                    continue
+                if to is None:   # REFERENCES parent: the parent's primary key
+                    pk = [c["name"] for c in sorted((c for c in self.columns_info(["table", parent]) if c["pk"]),
+                                                    key=lambda c: c["pk"])]
+                    to = pk[_seq] if _seq < len(pk) else "rowid"
+                if parent.lower() == name.lower():
+                    parent = name
+                rows.append(("fk_%s_%d" % (child, fid), ["table", child], frm, ["table", parent], to, on_delete))
+        return group_fks(rows)
+
     def param(self, value, typ, params):
         params.append(value)
         return "?"
@@ -128,8 +150,10 @@ class SqliteAdapter(Adapter):
         params.append(value)
         return "rowid = ?"
 
-    def transaction(self, path, stmts):
+    def transaction(self, path, stmts, disable_fk=False):
         cur = self.conn.cursor()
+        if disable_fk:   # only possible outside a transaction
+            cur.execute("PRAGMA foreign_keys = OFF")
         cur.execute("BEGIN")
         try:
             total = 0
@@ -141,6 +165,9 @@ class SqliteAdapter(Adapter):
         except Exception:
             cur.execute("ROLLBACK")
             raise
+        finally:
+            if disable_fk:
+                cur.execute("PRAGMA foreign_keys = ON")
 
     def query(self, text, database, limit):
         return self.run_sql(self.conn, text, limit)
@@ -325,12 +352,33 @@ class MysqlAdapter(Adapter):
     def default_insert(self, table, info):
         return "INSERT INTO %s () VALUES ()" % table
 
-    def transaction(self, path, stmts):
+    text_type = "CHAR"
+
+    def subq(self, sql):
+        # Error 1093 otherwise when a table references itself.
+        return "(SELECT * FROM (%s) AS dbc_sub)" % sql
+
+    def foreign_keys(self, path):
+        db, t = path[1], path[2]
+        rows = self.rows("SELECT k.constraint_name, k.table_schema, k.table_name, k.column_name, "
+                         "k.referenced_table_schema, k.referenced_table_name, k.referenced_column_name, r.delete_rule "
+                         "FROM information_schema.key_column_usage k "
+                         "JOIN information_schema.referential_constraints r ON r.constraint_schema = k.constraint_schema "
+                         "AND r.constraint_name = k.constraint_name AND r.table_name = k.table_name "
+                         "WHERE k.referenced_table_name IS NOT NULL AND ((k.table_schema = %s AND k.table_name = %s) "
+                         "OR (k.referenced_table_schema = %s AND k.referenced_table_name = %s)) "
+                         "ORDER BY k.table_schema, k.table_name, k.constraint_name, k.ordinal_position", (db, t, db, t))
+        return group_fks([(n, ["table", s1, t1], c, ["table", s2, t2], rc, rule)
+                          for n, s1, t1, c, s2, t2, rc, rule in rows])
+
+    def transaction(self, path, stmts, disable_fk=False):
         self.conn.ping(reconnect=True)
         self.conn.begin()
         try:
             total = 0
             with self.conn.cursor() as cur:
+                if disable_fk:
+                    cur.execute("SET FOREIGN_KEY_CHECKS = 0")
                 for sql, params, expect in stmts:
                     cur.execute(sql, params)
                     total += self.check_rowcount(cur, sql, expect)
@@ -339,6 +387,10 @@ class MysqlAdapter(Adapter):
         except Exception:
             self.conn.rollback()
             raise
+        finally:
+            if disable_fk:
+                with self.conn.cursor() as cur:
+                    cur.execute("SET FOREIGN_KEY_CHECKS = 1")
 
     def query(self, text, database, limit):
         self.conn.ping(reconnect=True)
@@ -609,11 +661,38 @@ class PostgresAdapter(Adapter):
         params.append(value)
         return "ctid = %s::tid"
 
-    def transaction(self, path, stmts):
+    text_type = "text"
+    FK_RULES = {"a": "NO ACTION", "r": "RESTRICT", "c": "CASCADE", "n": "SET NULL", "d": "SET DEFAULT"}
+
+    def table_label(self, path):
+        return "%s.%s" % (path[2], path[3])
+
+    def foreign_keys(self, path):
+        db = path[1]
+        cols = ("(SELECT array_agg(a.attname ORDER BY k.ord) FROM unnest(c.{0}) WITH ORDINALITY k(n, ord) "
+                "JOIN pg_attribute a ON a.attrelid = c.{1} AND a.attnum = k.n)")
+        rows = self.rows(db, "SELECT c.conname, sn.nspname, s.relname, %s, tn.nspname, t.relname, %s, c.confdeltype "
+                             "FROM pg_constraint c JOIN pg_class s ON s.oid = c.conrelid "
+                             "JOIN pg_namespace sn ON sn.oid = s.relnamespace JOIN pg_class t ON t.oid = c.confrelid "
+                             "JOIN pg_namespace tn ON tn.oid = t.relnamespace "
+                             "WHERE c.contype = 'f' AND (c.conrelid = %%s::regclass OR c.confrelid = %%s::regclass) "
+                             "ORDER BY c.conname" % (cols.format("conkey", "conrelid"), cols.format("confkey", "confrelid")),
+                         (self.rel(path[2], path[3]), self.rel(path[2], path[3])))
+        flat = []
+        for name, s1, t1, c1, s2, t2, c2, rule in rows:
+            for a, b in zip(c1 or [], c2 or []):
+                flat.append((name, ["table", db, s1, t1], a, ["table", db, s2, t2], b, self.FK_RULES.get(rule, "NO ACTION")))
+        return group_fks(flat)
+
+    def transaction(self, path, stmts, disable_fk=False):
         conn = self.get(path[1])
         total = 0
         with conn.transaction():
             with conn.cursor() as cur:
+                if disable_fk:
+                    # Turns off FK triggers for this transaction; needs superuser
+                    # (or a role granted the setting).
+                    cur.execute("SET LOCAL session_replication_role = replica")
                 for sql, params, expect in stmts:
                     cur.execute(sql, params)
                     total += self.check_rowcount(cur, sql, expect)
@@ -810,7 +889,31 @@ class OracleAdapter(Adapter):
     def default_insert(self, table, info):
         return "INSERT INTO %s (%s) VALUES (DEFAULT)" % (table, self.q(info[0]["name"]))
 
-    def transaction(self, path, stmts):
+    text_type = "VARCHAR2(4000)"
+
+    def foreign_keys(self, path):
+        rows = self.rows("SELECT c.constraint_name, c.owner, c.table_name, cc.column_name, r.owner, r.table_name, "
+                         "rc.column_name, c.delete_rule FROM all_constraints c "
+                         "JOIN all_cons_columns cc ON cc.owner = c.owner AND cc.constraint_name = c.constraint_name "
+                         "JOIN all_constraints r ON r.owner = c.r_owner AND r.constraint_name = c.r_constraint_name "
+                         "JOIN all_cons_columns rc ON rc.owner = r.owner AND rc.constraint_name = r.constraint_name "
+                         "AND rc.position = cc.position "
+                         "WHERE c.constraint_type = 'R' AND c.status = 'ENABLED' AND ((c.owner = :o AND c.table_name = :t) "
+                         "OR (r.owner = :o AND r.table_name = :t)) ORDER BY c.owner, c.constraint_name, cc.position",
+                         {"o": path[1], "t": path[2]})
+        return group_fks([(n, ["table", o1, t1], c, ["table", o2, t2], rc, rule)
+                          for n, o1, t1, c, o2, t2, rc, rule in rows])
+
+    def transaction(self, path, stmts, disable_fk=False):
+        # Oracle has no per-session switch: the referencing constraints are
+        # disabled around the transaction (DDL, so it commits on its own) and
+        # re-enabled without checking the existing rows.
+        disabled = []
+        if disable_fk:
+            with self.conn.cursor() as cur:
+                for fk in self.fk_split(path)[1]:
+                    cur.execute("ALTER TABLE %s DISABLE CONSTRAINT %s" % (self.full(*fk["table"][1:]), self.q(fk["name"])))
+                    disabled.append(fk)
         self.conn.autocommit = False
         try:
             total = 0
@@ -825,6 +928,10 @@ class OracleAdapter(Adapter):
             raise
         finally:
             self.conn.autocommit = True
+            with self.conn.cursor() as cur:
+                for fk in disabled:
+                    cur.execute("ALTER TABLE %s ENABLE NOVALIDATE CONSTRAINT %s"
+                                % (self.full(*fk["table"][1:]), self.q(fk["name"])))
 
     def query(self, text, database, limit):
         results = []
@@ -986,7 +1093,7 @@ class ClickhouseAdapter(Adapter):
     def default_insert(self, table, info):
         raise ValueError("ClickHouse needs at least one value to insert a row")
 
-    def transaction(self, path, stmts):
+    def transaction(self, path, stmts, disable_fk=False):
         for sql, params, expect in stmts:
             self.client.command(sql, parameters=params or None, settings={"mutations_sync": 1})
         return len(stmts)

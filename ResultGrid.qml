@@ -49,6 +49,10 @@ Item {
   property int dropPos: -1             // display position while dragging a header
   property int resizingCol: -1
   property bool columnsOpen: false
+
+  // foreign keys: data column index -> true (set by the panel for table tabs)
+  property var fkCols: ({})
+  property var pkCols: ({})
   property var labels: ({ columns: "Columns", showAll: "Show all", reset: "Reset" })
 
   property color foreground: Color.foreground
@@ -74,6 +78,9 @@ Item {
   signal sortRequested(int col, bool desc)
   signal headerMenuRequested(int col, real x, real y)   // grid coordinates
   signal layoutEdited()
+  signal referenceRequested(int row, int col)   // go to the referenced row (F12, Ctrl+click, ↗)
+  signal pickRequested(int row, int col)        // choose a value in the referenced table (F4, ⌕)
+  signal cellMenuRequested(int row, int col, real x, real y)
 
   // keep: same columns as before (edits, paging) -> keep widths + selection
   function setResult(res, keep) {
@@ -95,7 +102,7 @@ Item {
     var charW = fontSize * 0.62
     var w = []
     for (var c = 0; c < cols.length; c++) {
-      var n = String(cols[c]).length + 2
+      var n = String(cols[c]).length + 4 + (fkCols[c] ? 2 : 0) + (pkCols[c] ? 2 : 0)   // + sort arrow, key/link marks
       var limit = Math.min(rows.length, 60)
       for (var r = 0; r < limit; r++) n = Math.max(n, Math.min(48, cellText(rows[r][c]).length))
       w.push(Math.round(Math.max(64, n * charW + 24)))
@@ -472,7 +479,8 @@ Item {
             anchors.leftMargin: 8
             anchors.rightMargin: 4
             anchors.verticalCenter: parent.verticalCenter
-            text: String(grid.columns[headCell.col])
+            text: (grid.pkCols[headCell.col] ? I18n.glyph.key + " " : "")
+              + (grid.fkCols[headCell.col] ? I18n.glyph.link + " " : "") + String(grid.columns[headCell.col])
             color: grid.editable && grid.colEditable[headCell.col] === false ? grid.muted : grid.foreground
             font.family: grid.fontFamily
             font.pixelSize: grid.fontSize
@@ -618,11 +626,14 @@ Item {
             border.width: selected || editing ? 1 : 0
             border.color: grid.accent
 
+            readonly property bool isFk: grid.fkCols[col] === true
+            readonly property bool showFk: isFk && !editing && (selected || cellMouse.containsMouse || fkPick.hovered || fkGo.hovered)
+
             Text {
               visible: !cellItem.editing
               anchors.fill: parent
               anchors.leftMargin: 8
-              anchors.rightMargin: 8
+              anchors.rightMargin: cellItem.showFk ? fkButtons.width + 10 : 8
               verticalAlignment: Text.AlignVCenter
               horizontalAlignment: typeof cellItem.value === "number" ? Text.AlignRight : Text.AlignLeft
               text: cellItem.value === undefined && rowItem.isAdded ? "DEFAULT" : grid.cellText(cellItem.value)
@@ -656,6 +667,7 @@ Item {
                 }
                 Keys.onPressed: function(event) {
                   if (event.key === Qt.Key_Escape) { grid.cancelEdit(); event.accepted = true }
+                  else if (event.key === Qt.Key_F4 && grid.fkCols[cellItem.col]) { grid.cancelEdit(); grid.pickRequested(cellItem.row, cellItem.col); event.accepted = true }
                   else if (event.key === Qt.Key_Tab) { grid.commitEdit(text, "right"); event.accepted = true }
                   else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) { grid.commitEdit(text, "down"); event.accepted = true }
                 }
@@ -671,15 +683,59 @@ Item {
             }
 
             MouseArea {
+              id: cellMouse
               anchors.fill: parent
               enabled: !cellItem.editing
+              hoverEnabled: cellItem.isFk
+              acceptedButtons: Qt.LeftButton | Qt.RightButton
               onClicked: function(m) {
                 grid.selCol = cellItem.col
+                if (m.button === Qt.RightButton) {
+                  if (!grid.selectedRows[cellItem.row]) grid.selectRow(cellItem.row, 0)
+                  var p = mapToItem(grid, m.x, m.y)
+                  grid.cellMenuRequested(cellItem.row, cellItem.col, p.x, p.y)
+                  return
+                }
+                if (m.modifiers & Qt.ControlModifier && cellItem.isFk) {
+                  grid.selectRow(cellItem.row, 0)
+                  grid.referenceRequested(cellItem.row, cellItem.col)
+                  return
+                }
                 if (m.modifiers & (Qt.ShiftModifier | Qt.ControlModifier)) grid.selectRow(cellItem.row, m.modifiers)
                 else grid.selectRow(cellItem.row, 0)
               }
-              onDoubleClicked: {
+              onDoubleClicked: function(m) {
+                if (m.button !== Qt.LeftButton) return
                 if (!grid.beginEdit(cellItem.row, cellItem.col)) grid.cellActivated(cellItem.row, cellItem.col)
+              }
+            }
+
+            // Foreign key cell: ⌕ pick a value (editable), ↗ open the referenced row
+            Row {
+              id: fkButtons
+              visible: cellItem.showFk
+              anchors.right: parent.right
+              anchors.rightMargin: 4
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: 2
+              Text {
+                id: fkPickText
+                visible: grid.canEdit(cellItem.row, cellItem.col)
+                text: I18n.glyph.search
+                color: fkPick.hovered ? grid.accent : grid.muted
+                font.family: grid.fontFamily
+                font.pixelSize: grid.fontSize
+                HoverHandler { id: fkPick }
+                TapHandler { onTapped: { grid.selectRow(cellItem.row, 0); grid.selCol = cellItem.col; grid.pickRequested(cellItem.row, cellItem.col) } }
+              }
+              Text {
+                visible: cellItem.value !== null && cellItem.value !== undefined && cellItem.value !== ""
+                text: I18n.glyph.goTo
+                color: fkGo.hovered ? grid.accent : grid.muted
+                font.family: grid.fontFamily
+                font.pixelSize: grid.fontSize
+                HoverHandler { id: fkGo }
+                TapHandler { onTapped: { grid.selectRow(cellItem.row, 0); grid.selCol = cellItem.col; grid.referenceRequested(cellItem.row, cellItem.col) } }
               }
             }
           }
@@ -858,6 +914,9 @@ Item {
     else if (event.key === Qt.Key_PageDown) selRow = Math.min(rows.length - 1, selRow + Math.max(1, Math.floor(list.height / rowHeight) - 1))
     else if (event.key === Qt.Key_PageUp) selRow = Math.max(0, selRow - Math.max(1, Math.floor(list.height / rowHeight) - 1))
     else if (event.key === Qt.Key_F2) beginEdit(selRow, selCol)
+    else if (event.key === Qt.Key_F12 && fkCols[selCol]) referenceRequested(selRow, selCol)
+    else if (event.key === Qt.Key_F4 && fkCols[selCol] && canEdit(selRow, selCol)) pickRequested(selRow, selCol)
+    else if (event.key === Qt.Key_Menu && selRow >= 0) cellMenuRequested(selRow, selCol, 40, header.height + (selRow + 1) * rowHeight - list.contentY)
     else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
       if (!beginEdit(selRow, selCol)) cellActivated(selRow, selCol)
     } else if (event.key === Qt.Key_Delete && editable) deleteRequested()

@@ -183,7 +183,18 @@ class Server:
     def cmd_apply_changes(self, req):
         s = self.session(req["connId"])
         with s.lock:
-            return s.apply_changes(req["path"], req.get("changes") or [])
+            return s.apply_changes(req["path"], req.get("changes") or [], req.get("fkMode") or "")
+
+    def cmd_fk_lookup(self, req):
+        s = self.session(req["connId"])
+        limit = max(1, min(int(req.get("limit") or 200), 2000))
+        with s.lock:
+            return s.fk_lookup(req["path"], req["column"], req.get("search") or "", limit)
+
+    def cmd_delete_impact(self, req):
+        s = self.session(req["connId"])
+        with s.lock:
+            return s.delete_impact(req["path"], req.get("keys") or [])
 
     def cmd_write_file(self, req):
         path = os.path.expanduser(req["path"])

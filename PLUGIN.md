@@ -23,6 +23,9 @@ native window that follows your Omarchy theme.
   clause (or a Mongo filter / Redis pattern), sort by column, paginate.
   Drag headers to reorder columns, resize them, and show / hide columns from the 👁 button —
   the layout is remembered per table.
+- **Foreign keys**: jump to the referenced row (`F12`, `Ctrl+click`), open the rows that reference the
+  current one, and pick a value from the referenced table with a searchable picker (`F4`). Deleting
+  referenced rows warns you and offers **delete in cascade** or **disable constraints**.
 - **Selection & export**: select all rows (`Ctrl+A`), copy cells or rows (TSV, ready for a spreadsheet),
   copy as CSV / JSON, export to CSV.
 - **Keyboard first**: switch tabs with `Ctrl+Tab`, `Alt+1…9` or the `Ctrl+P` tab switcher, close all tabs
@@ -76,6 +79,7 @@ SQLite works out of the box and other drivers are offered the first time you nee
 | `Ctrl+Shift+E` | Focus the sidebar (then arrows, `Enter`, `Menu`) |
 | `Ctrl+S` / `Ctrl+I` | Save changes / add a row |
 | `Ctrl+A` / `Ctrl+C` / `Del` | Select all rows / copy / delete rows |
+| `F12` / `F4` | Go to the referenced row / pick a referenced value |
 | `Ctrl+N` | New connection |
 
 ## Links

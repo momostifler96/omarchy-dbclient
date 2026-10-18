@@ -134,12 +134,29 @@ Item {
   readonly property var tabConn: tab ? connById(tab.connId) : null
   readonly property var tabResult: tab && !tabIsTable && tab.results.length ? tab.results[Math.min(tab.resultIndex, tab.results.length - 1)] : null
   readonly property var tabData: tabIsTable ? tab.data : null
+  // data column index -> true, for the grid's key / link markers
+  readonly property var fkColMap: {
+    var m = {}
+    if (tabData && tabData.foreignKeys)
+      tabData.foreignKeys.forEach(function(fk) {
+        fk.columns.forEach(function(n) { var i = tabData.columns.indexOf(n); if (i >= 0) m[i] = true })
+      })
+    return m
+  }
+  readonly property var pkColMap: {
+    var m = {}
+    if (tabData && tabData.keyColumns)
+      tabData.keyColumns.forEach(function(n) { var i = tabData.columns.indexOf(n); if (i >= 0) m[i] = true })
+    return m
+  }
   readonly property int pendingCount: tabIsTable ? buildChanges(tab).length : 0
 
   // Text fields lose their binding once typed in: resync them per tab.
   onCurrentTabChanged: {
-    if (filterField) filterField.text = tabIsTable ? tab.where : ""
-    if (dbField) dbField.text = tab ? tab.database : ""
+    // `tab` may not be re-evaluated yet inside this handler: index directly.
+    var t = currentTab >= 0 && currentTab < tabs.length ? tabs[currentTab] : null
+    if (filterField) filterField.text = t && t.kind === "table" ? t.where : ""
+    if (dbField) dbField.text = t ? t.database : ""
     Qt.callLater(function() {
       if (currentTab >= 0 && currentTab < tabs.length) tabList.positionViewAtIndex(currentTab, ListView.Contain)
     })
@@ -286,6 +303,7 @@ Item {
 
   // ---- confirmations ------------------------------------------------------
   function ask(title, message, sql, confirmText, danger, onYes, connId) {
+    askDialog.choices = []
     askDialog.connId = connId || ""
     askDialog.title = title
     askDialog.message = message
@@ -294,6 +312,12 @@ Item {
     askDialog.danger = danger === true
     askDialog.onYes = onYes
     askDialog.opened = true
+  }
+
+  // Several actions instead of one confirm button: [{ text, danger, run }]
+  function askChoice(title, message, choices) {
+    ask(title, message, "", "", true, null, "")
+    askDialog.choices = choices
   }
 
   // ---- drivers ------------------------------------------------------------
@@ -637,18 +661,24 @@ Item {
     if (run) runQuery()
   }
 
-  function openTable(row) {
-    var key = JSON.stringify(row.path)
-    for (var i = 0; i < tabs.length; i++) {
-      if (tabs[i].kind === "table" && tabs[i].connId === row.connId && JSON.stringify(tabs[i].path) === key) {
-        selectTab(i)
-        return
-      }
+  function tableTabIndex(connId, path) {
+    var key = JSON.stringify(path)
+    for (var i = 0; i < tabs.length; i++)
+      if (tabs[i].kind === "table" && tabs[i].connId === connId && JSON.stringify(tabs[i].path) === key) return i
+    return -1
+  }
+
+  // where: optional filter for a new tab
+  function openTable(row, where) {
+    var i = tableTabIndex(row.connId, row.path)
+    if (i >= 0) {
+      selectTab(i)
+      return
     }
     saveEditor()
     tabCounter++
     var list = tabs.slice()
-    list.push(tableTab(tabCounter, row.connId, row.database, row.path, row.label))
+    list.push(tableTab(tabCounter, row.connId, row.database, row.path, row.label, where ? { where: where } : null))
     tabs = list
     currentTab = list.length - 1
     loadEditor()
@@ -884,6 +914,7 @@ Item {
     if (!tabIsTable) return
     var go = function() {
       if (change) updateTab(t.uid, change)
+      if (change && change.where !== undefined && filterField) filterField.text = change.where
       loadTable(t.uid)
     }
     if (buildChanges(t).length) ask(tr("discard"), tr("discardConfirm", t.title), "", tr("discard"), true, go)
@@ -935,6 +966,102 @@ Item {
     if (r < base && value === originalText) delete edits[key]
     else edits[key] = value
     updateTab(t.uid, { edits: edits })
+  }
+
+  // ---- foreign keys -------------------------------------------------------
+  // Outgoing foreign key of the current table that contains data column `col`.
+  function fkFor(col) {
+    if (!tabData || !tabData.foreignKeys) return null
+    var name = tabData.columns[col]
+    var fks = tabData.foreignKeys
+    for (var i = 0; i < fks.length; i++) if (fks[i].columns.indexOf(name) >= 0) return fks[i]
+    return null
+  }
+
+  function sqlIdent(name) {
+    if (tabConn && tabConn.type === "mysql") return "`" + String(name).replace(/`/g, "``") + "`"
+    return '"' + String(name).replace(/"/g, '""') + '"'
+  }
+
+  function sqlLiteral(v) {
+    if (typeof v === "number" || typeof v === "boolean") return String(v)
+    if (typeof v === "object") v = JSON.stringify(v)
+    return "'" + String(v).replace(/'/g, "''") + "'"
+  }
+
+  function whereFor(cols, values) {
+    return cols.map(function(c, i) {
+      var v = values[i]
+      return sqlIdent(c) + (v === null || v === undefined ? " IS NULL" : " = " + sqlLiteral(v))
+    }).join(" AND ")
+  }
+
+  function rowValues(r, names) {
+    return names.map(function(n) { return grid.valueAt(r, tabData.columns.indexOf(n)) })
+  }
+
+  // Open (or reuse) the table tab for `path`, filtered by `where`.
+  function openTableWhere(connId, path, where) {
+    var i = tableTabIndex(connId, path)
+    if (i >= 0) {
+      selectTab(i)
+      reloadTable({ where: where, offset: 0 })
+    } else {
+      openTable({ connId: connId, path: path, label: path[path.length - 1], database: path.length > 2 ? path[1] : "" }, where)
+    }
+  }
+
+  function openReference(r, c) {
+    var fk = fkFor(c)
+    if (!fk || r < 0) return
+    var vals = rowValues(r, fk.columns)
+    if (vals.some(function(v) { return v === null || v === undefined || v === "" })) { toast(tr("fkNull")); return }
+    openTableWhere(tab.connId, fk.refPath, whereFor(fk.refColumns, vals))
+  }
+
+  function openReferencing(r, ref) {
+    openTableWhere(tab.connId, ref.path, whereFor(ref.columns, rowValues(r, ref.refColumns)))
+  }
+
+  function pickReference(r, c) {
+    var fk = fkFor(c)
+    if (!fk || !grid.canEdit(r, c)) return
+    var t = tab
+    fkPicker.open(t.connId, t.path, t.data.columns[c], grid.valueAt(r, c), function(values) {
+      if (!tab || tab.uid !== t.uid) return
+      for (var i = 0; i < fk.columns.length; i++) {
+        var ci = t.data.columns.indexOf(fk.columns[i])
+        if (ci >= 0 && grid.canEdit(r, ci)) setCell(r, ci, values[i])
+      }
+      grid.forceActiveFocus()
+    })
+  }
+
+  function cellMenu(r, c, x, y) {
+    var items = []
+    var fk = fkFor(c)
+    if (fk) {
+      items.push({ text: tr("goToRef", fk.label), icon: I18n.glyph.goTo, run: function() { openReference(r, c) } })
+      if (grid.canEdit(r, c))
+        items.push({ text: tr("pickValue", fk.label), icon: I18n.glyph.search, run: function() { pickReference(r, c) } })
+    }
+    var refs = tabData && tabData.referencedBy && r < tabData.rows.length ? tabData.referencedBy : []
+    if (refs.length && items.length) items.push(null)
+    refs.forEach(function(ref) {
+      items.push({ text: tr("referencingRows", ref.label + " (" + ref.columns.join(", ") + ")"), icon: I18n.glyph.references,
+                   run: function() { openReferencing(r, ref) } })
+    })
+    if (items.length) items.push(null)
+    items.push({ text: tr("copyValue"), icon: I18n.glyph.copy, run: function() {
+      var v = grid.valueAt(r, c)
+      copyText(v === null || v === undefined ? "" : (typeof v === "object" ? JSON.stringify(v) : String(v)))
+    } })
+    if (grid.canEdit(r, c)) items.push({ text: tr("setNull"), icon: I18n.glyph.nullValue, run: function() { setCell(r, c, null) } })
+    if (tabData && tabData.editable)
+      items.push({ text: tr("deleteRows"), icon: I18n.glyph.trash, danger: true, run: function() { toggleDeleteRows() } })
+    var p = grid.mapToItem(contextMenu, x, y)
+    contextMenu.returnFocus = grid
+    contextMenu.popup(items, p.x, p.y)
   }
 
   function addRow() {
@@ -990,13 +1117,46 @@ Item {
     return changes
   }
 
+  // Deleting rows other tables point to: say which, and let the user pick
+  // cascade / disable constraints / cancel before anything is sent.
   function saveTable() {
     var t = tab
     if (!tabIsTable) return
     var changes = buildChanges(t)
     if (!changes.length) return
+    var deletes = changes.filter(function(c) { return c.op === "delete" })
+    if (!deletes.length || !t.data.referencedBy || !t.data.referencedBy.length) {
+      applyTable(t, changes, "")
+      return
+    }
     updateTab(t.uid, { loading: true, error: "" })
-    backend.request("apply_changes", { connId: t.connId, path: t.path, changes: changes }, function(ok, res, msg) {
+    backend.request("delete_impact", { connId: t.connId, path: t.path, keys: deletes.map(function(d) { return d.key }) },
+                    function(ok, res, msg) {
+      updateTab(t.uid, { loading: false })
+      if (!ok) { toast(msg.error, true); return }
+      if (!res.length) { applyTable(t, changes, ""); return }
+      var dbRules = ["CASCADE", "SET NULL", "SET DEFAULT"]
+      var blocking = res.filter(function(i) { return dbRules.indexOf(i.onDelete) < 0 })
+      var lines = res.map(function(i) {
+        return tr("fkLine", i.label + " (" + i.columns.join(", ") + ")", i.count)
+          + (dbRules.indexOf(i.onDelete) >= 0 ? tr("fkByDb", i.onDelete) : tr("fkBlocks", i.onDelete))
+      })
+      var message = tr("fkIntro") + "\n" + lines.join("\n") + "\n\n" + (blocking.length ? tr("fkChoose") : tr("fkAuto"))
+      var run = function(mode) { return function() { applyTable(t, changes, mode) } }
+      if (blocking.length)
+        askChoice(tr("fkTitle"), message, [
+          { text: tr("fkDisable"), danger: true, run: run("disable") },
+          { text: tr("fkCascade"), danger: true, run: run("cascade") }
+        ])
+      else
+        askChoice(tr("fkTitle"), message, [{ text: tr("fkDelete"), danger: true, run: run("") }])
+    })
+  }
+
+  function applyTable(t, changes, fkMode) {
+    updateTab(t.uid, { loading: true, error: "" })
+    backend.request("apply_changes", { connId: t.connId, path: t.path, changes: changes, fkMode: fkMode },
+                    function(ok, res, msg) {
       if (ok) {
         toast(tr("saved", changes.length))
         updateTab(t.uid, { edits: {}, deleted: {}, inserted: 0 })
@@ -1146,7 +1306,8 @@ Item {
     Shortcut {
       sequence: "Escape"
       onActivated: {
-        if (grid.editRow >= 0) grid.cancelEdit()
+        if (fkPicker.opened) fkPicker.close()
+        else if (grid.editRow >= 0) grid.cancelEdit()
         else if (contextMenu.opened) contextMenu.close()
         else if (grid.columnsOpen) grid.columnsOpen = false
         else if (cellDialog.opened) cellDialog.opened = false
@@ -1907,6 +2068,11 @@ Item {
               onCellEdited: function(r, c, value) { root.setCell(r, c, value) }
               onDeleteRequested: root.toggleDeleteRows()
               onSortRequested: function(c, desc) { root.sortBy(c, desc) }
+              onReferenceRequested: function(r, c) { root.openReference(r, c) }
+              onPickRequested: function(r, c) { root.pickReference(r, c) }
+              onCellMenuRequested: function(r, c, x, y) { root.cellMenu(r, c, x, y) }
+              fkCols: root.fkColMap
+              pkCols: root.pkColMap
               onHeaderMenuRequested: function(c, x, y) { root.headerMenu(c, x, y) }
               // Silent, like the editor text: the layout must not rebuild the tab strip.
               onLayoutEdited: if (root.tab) { root.tab.layout = grid.layoutState(); saveStateTimer.restart() }
@@ -2059,6 +2225,11 @@ Item {
       panel: root
     }
 
+    FkPicker {
+      id: fkPicker
+      panel: root
+    }
+
     // Confirmation with the exact statement that will run
     Rectangle {
       id: askDialog
@@ -2070,6 +2241,7 @@ Item {
       property bool danger: false
       property string connId: ""
       property var onYes: null
+      property var choices: []      // [{ text, danger, run }] replaces the confirm button
       anchors.fill: parent
       visible: opened
       color: Util.alpha(root.bg, 0.7)
@@ -2137,7 +2309,22 @@ Item {
               bordered: true
               onClicked: askDialog.opened = false
             }
+            Repeater {
+              model: askDialog.choices
+              delegate: Button {
+                required property var modelData
+                text: modelData.text
+                bordered: true
+                foreground: modelData.danger ? root.urgent : root.fg
+                onClicked: {
+                  var f = modelData.run
+                  askDialog.opened = false
+                  if (typeof f === "function") f()
+                }
+              }
+            }
             Button {
+              visible: askDialog.choices.length === 0
               text: askDialog.confirmText
               bordered: true
               selected: true

@@ -168,7 +168,7 @@ class RedisAdapter(Adapter):
         })
         return res
 
-    def apply_changes(self, path, changes):
+    def apply_changes(self, path, changes, fk_mode=""):
         db, key = path[1], path[2]
         client = self.get(db)
         t = self.key_type(client, key)
@@ -560,7 +560,7 @@ class MongoAdapter(Adapter):
         })
         return res
 
-    def apply_changes(self, path, changes):
+    def apply_changes(self, path, changes, fk_mode=""):
         from bson import json_util
         coll = self.client[path[1]][path[2]]
         done = 0
