@@ -34,6 +34,17 @@ ADAPTERS = {
 }
 
 
+def secure_state_path():
+    # tabs.json stores editor text, which may contain credentials or sensitive literals.
+    state_dir = os.path.dirname(STATE_FILE)
+    os.makedirs(state_dir, mode=0o700, exist_ok=True)
+    for path, mode in ((state_dir, 0o700), (STATE_FILE, 0o600)):
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Server
 # ---------------------------------------------------------------------------
@@ -76,6 +87,7 @@ class Server:
     # -- commands -----------------------------------------------------------
 
     def cmd_hello(self, req):
+        secure_state_path()
         try:
             with open(STATE_FILE) as f:
                 state = json.load(f)
@@ -84,9 +96,14 @@ class Server:
         return {"version": 1, "settings": load_settings(), "state": state, **driver_status()}
 
     def cmd_save_state(self, req):
-        os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
+        secure_state_path()
         tmp = STATE_FILE + ".tmp"
-        with open(tmp, "w") as f:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        except OSError:
+            pass
+        with os.fdopen(fd, "w") as f:
             json.dump(req.get("state") or {}, f)
         os.replace(tmp, STATE_FILE)
         return True
