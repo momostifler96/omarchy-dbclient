@@ -67,6 +67,25 @@ omarchy plugin add https://github.com/momostifler96/omarchy-dbclient.git --enabl
 entry to the Omarchy menu (both files are backed up first). The only requirement is `python3`;
 SQLite works out of the box and other drivers are offered the first time you need them.
 
+## Remove
+
+```bash
+omarchy plugin remove momoledev.dbclient
+rm -f ~/.local/bin/omarchy-dbclient
+```
+
+`omarchy plugin remove` deletes the plugin folder and disables it. If you used
+`install.sh --bindings --menu`, also remove the block it added to
+`~/.config/hypr/bindings.lua` and the `dbclient` entry in
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` (both were backed up first),
+then run `hyprctl reload`.
+
+Saved connections, open tabs and the pip venv live in
+`~/.config/omarchy-dbclient`, `~/.local/state/omarchy-dbclient` and
+`~/.local/share/omarchy-dbclient`; delete those directories to remove them.
+Drivers installed with pacman are system packages and stay until you uninstall
+them.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action |

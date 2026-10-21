@@ -39,6 +39,32 @@ global shortcuts below to `~/.config/hypr/bindings.lua`, and `--menu` adds a
 
 The only requirement is `python3`, which Omarchy already ships.
 
+## Remove
+
+```bash
+omarchy plugin remove momoledev.dbclient
+rm -f ~/.local/bin/omarchy-dbclient
+```
+
+`omarchy plugin remove` deletes the plugin folder and disables it; it does not
+undo the optional installer steps, and it does not delete your data. If you ran
+`install.sh --bindings --menu`, remove the `DB client` block it appended to
+`~/.config/hypr/bindings.lua` and the `dbclient` entry it inserted in
+`~/.config/omarchy/extensions/omarchy-menu.jsonc` (the installer left
+`*.bak.<timestamp>` copies of both files), then run `hyprctl reload`.
+
+The plugin's own files are outside the plugin folder. Delete them only if you
+want to start over:
+
+```bash
+rm -rf ~/.config/omarchy-dbclient      # saved connections (passwords included)
+rm -rf ~/.local/state/omarchy-dbclient # open tabs
+rm -rf ~/.local/share/omarchy-dbclient # pip venv and its drivers
+```
+
+Drivers installed with pacman are system packages and are not removed by these
+commands; uninstall them with pacman if you no longer need them.
+
 ## Drivers
 
 Only SQLite works out of the box. The first time you connect to another engine
