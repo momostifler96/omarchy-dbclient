@@ -193,7 +193,14 @@ class MysqlAdapter(Adapter):
                       database=cfg.get("database") or None, autocommit=True, connect_timeout=10,
                       charset="utf8mb4", client_flag=CLIENT.FOUND_ROWS)
         if cfg.get("ssl"):
-            kwargs["ssl"] = {}
+            # An empty dict would leave PyMySQL in PREFERRED mode, which falls back
+            # to plaintext when the server has no TLS. A context makes TLS required
+            # (no certificate check, like PostgreSQL's sslmode=require).
+            import ssl
+            ctx = ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = ssl.CERT_NONE
+            kwargs["ssl"] = ctx
         self.conn = pymysql.connect(**kwargs)
 
     def close(self):
